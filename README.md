@@ -683,11 +683,21 @@ http://127.0.0.1:7863/panel/
 
 > ⚠️ 公网部署提示：服务自身只提供明文 HTTP，**请务必置于 HTTPS 反向代理之后**（Nginx/Caddy 等）并配置访问限流；仅本机或私有网络使用时可直接运行。
 
+## 多协议入站（nonlog fork）
+
+此 Fork 在不修改 WorkBuddy 上游调用协议的前提下，通过原生入口处理 **Responses API** 和 **Anthropic Messages API**。`/v1/chat/completions` 继续保持兼容，并且三种入站都复用现有账号池、模型路由、限流、会话粘性、请求日志和上游流式修复。
+
+- **Responses**：通过 `POST /v1/responses` 调用，支持 Codex CLI / App 的 `function_call`、`custom_tool_call`、namespace 工具及对应流式事件。`prompt_cache_key` 会传递到现有会话层。适配代码基于关闭的 [PR #109](https://github.com/linguo2625469/workbuddy2api-panel/pull/109)（感谢原作者）。
+- **Messages**：通过 `POST /v1/messages` 或 `POST /messages` 调用，支持 Anthropic Messages 的 `x-api-key` 鉴权、`tool_use` / `tool_result` 和事件流。适配代码基于关闭的 [PR #63](https://github.com/linguo2625469/workbuddy2api-panel/pull/63)（感谢原作者）。
+- **限制**：Responses 的 `store` / `previous_response_id` 不提供服务端存储和续接；Claude 原生 thinking 签名不可由 Chat 上游生成；内置服务端 `web_search` / `code_execution` 工具不在此网关本地执行，部分 Chat 不支持的特殊字段无法无损映射。原生入站意味着免去 NewAPI 的外部入站转换层，**不意味着上游拥有完整的 Responses / Anthropic 原生能力**。
+
 ## 🔌 API 端点
 
 | 端点 | 鉴权 | 说明 |
 |---|---|---|
 | `POST /v1/chat/completions` | Bearer（`api_key` 非空时） | OpenAI 兼容补全；流式/非流式；请求体上限 8 MiB |
+| `POST /v1/responses` | Bearer（`api_key` 非空时） | 原生 Responses 入站（Codex / Codex App）；流式与非流式、function / custom / namespace tools；内部复用现有 Chat 转发管线 |
+| `POST /v1/messages`、`POST /messages` | Bearer 或 `x-api-key`（`api_key` 非空时） | Anthropic Messages 入站（Claude Code）；流式与非流式、客户端工具调用 |
 | `GET /v1/models` | Bearer（`api_key` 非空时） | 模型列表（纯动态拉取，缓存 1h；失败返回空列表 + 5min 负缓存）；每模型带 `context_length`/`max_output_tokens`（四级查找链：上游目录 → 内置知识表 → model.json 缓存 → models.dev）、`reasoning_supported_efforts`/`reasoning_default_effort` 思考档位及描述/标签/倍率等全字段（上游有返回时） |
 | `GET /status` | Bearer（`api_key` 非空时） | 账号状态汇总 + 每账号详情（积分/冷却/熔断/在途/粘性）+ `model_locks`（按「域 + 模型」聚合的限流视图：可选 / 总数、锁定账号数、`state`、最早解锁与全池解锁时间、限流原因；无锁定为空） |
 | `GET /healthz` | 无 | 健康检查：有 healthy 且未占满账号返回 200，否则 503；响应带身份标识（见下） |
