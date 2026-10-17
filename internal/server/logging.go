@@ -3,6 +3,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -342,10 +343,12 @@ type requestTraceKey struct{}
 
 // requestTrace 在一次 chat 请求内共享标识与最终统计，ServeHTTP 出口统一记账。
 type requestTrace struct {
-	id    string
-	start time.Time
-	stat  *chatStat
-	path  string
+	id      string
+	start   time.Time
+	stat    *chatStat
+	path    string
+	account string // Search runs outside chatStat, but still records the selected account.
+	model   string // Label for non-chat activity (search).
 	// 调用来源，进入 handler 时一次性采集（见 ServeHTTP / captureClientInfo）。
 	clientIP  string
 	userAgent string
@@ -393,7 +396,14 @@ func requestTraceFrom(r *http.Request) *requestTrace {
 	if r == nil {
 		return nil
 	}
-	tr, _ := r.Context().Value(requestTraceKey{}).(*requestTrace)
+	return requestTraceFromContext(r.Context())
+}
+
+func requestTraceFromContext(ctx context.Context) *requestTrace {
+	if ctx == nil {
+		return nil
+	}
+	tr, _ := ctx.Value(requestTraceKey{}).(*requestTrace)
 	return tr
 }
 
@@ -407,6 +417,12 @@ func (t *requestTrace) event(status int) reqlog.Event {
 		RequestID: t.id,
 		Path:      path,
 		Status:    status,
+	}
+	if t.account != "" {
+		e.Account = t.account
+	}
+	if t.model != "" {
+		e.Model = t.model
 	}
 	duration := time.Since(t.start)
 	e.DurationMs = duration.Milliseconds()
