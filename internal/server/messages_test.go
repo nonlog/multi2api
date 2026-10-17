@@ -416,3 +416,31 @@ func TestMessagesEndpointNonStreamError(t *testing.T) {
 		t.Fatalf("code=%d body=%v", rec.Code, obj)
 	}
 }
+
+// Shared SSE assertions from upstream protocol PR #63.
+func sseTypes(body string) []string {
+	var types []string
+	for _, block := range strings.Split(body, "\n\n") {
+		for _, line := range strings.Split(block, "\n") {
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			var m map[string]any
+			if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &m) != nil {
+				continue
+			}
+			if t, ok := m["type"].(string); ok {
+				types = append(types, t)
+			}
+		}
+	}
+	return types
+}
+func containsStr(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
