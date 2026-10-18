@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -125,20 +126,32 @@ func TestMessagesToolResultMixedImageErrorAndTextCompatibility(t *testing.T) {
 
 func TestMessagesMultimodalToolResultFullHandler(t *testing.T) {
 	seen := false
-	up := newFakeUpstream(t, func(body string) (int, string, bool) {
-		var req map[string]any
-		if json.Unmarshal([]byte(body), &req) != nil {
-			t.Error("upstream request is not JSON")
-		} else if messages, ok := req["messages"].([]any); ok && len(messages) >= 2 {
-			tool := messages[len(messages)-1].(map[string]any)
-			parts, ok := tool["content"].([]any)
-			if ok && tool["role"] == "tool" && len(parts) == 2 &&
-				parts[1].(map[string]any)["type"] == "image_url" {
-				seen = true
+	up := &upstream.Client{
+		HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read upstream body: %v", err)
 			}
-		}
-		return 200, sseOK, true
-	})
+			var req map[string]any
+			if json.Unmarshal(body, &req) != nil {
+				t.Error("upstream request is not JSON")
+			} else if messages, ok := req["messages"].([]any); ok && len(messages) >= 2 {
+				tool := messages[len(messages)-1].(map[string]any)
+				parts, ok := tool["content"].([]any)
+				if ok && tool["role"] == "tool" && len(parts) == 2 &&
+					parts[1].(map[string]any)["type"] == "image_url" {
+					seen = true
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(strings.NewReader(sseOK)),
+			}, nil
+		})},
+		ChatBaseCN:    "https://fake.example",
+		BillingBaseCN: "https://fake.example",
+	}
 	h := NewHandler(Config{
 		Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
 		Upstream: up,
