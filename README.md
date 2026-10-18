@@ -766,11 +766,18 @@ http://127.0.0.1:7863/panel/
 | `POST /v1/responses` | Bearer（`api_key` 非空时） | 原生 Responses 入站（Codex / Codex App）；流式与非流式、function / custom / namespace tools；内部复用现有 Chat 转发管线 |
 | `POST /v1/messages`、`POST /messages` | Bearer 或 `x-api-key`（`api_key` 非空时） | Anthropic Messages 入站（Claude Code）；流式与非流式、客户端工具调用 |
 | `POST /v1/search/messages` | Bearer 或 `x-api-key`（`api_key` 非空时） | WorkBuddy 联网搜索，响应封装为 Anthropic Messages 的 `web_search_tool_result`；独立于普通模型对话 |
+| `POST /alpha/search`、`POST /v1/alpha/search`、`POST /backend-api/codex/alpha/search` | Bearer（`api_key` 非空时） | Codex 独立搜索：`commands.search_query`、`open`、`find`、`click`，回应 `output` / `results` / `encrypted_output: null` |
 | `GET /v1/models` | Bearer（`api_key` 非空时） | 模型列表（纯动态拉取，缓存 1h；失败返回空列表 + 5min 负缓存）；每模型带 `context_length`/`max_output_tokens`（四级查找链：上游目录 → 内置知识表 → model.json 缓存 → models.dev）、`reasoning_supported_efforts`/`reasoning_default_effort` 思考档位及描述/标签/倍率等全字段（上游有返回时） |
 | `GET /status` | Bearer（`api_key` 非空时） | 账号状态汇总 + 每账号详情（积分/冷却/熔断/在途/粘性）+ `model_locks`（按「域 + 模型」聚合的限流视图：可选 / 总数、锁定账号数、`state`、最早解锁与全池解锁时间、限流原因；无锁定为空） |
 | `GET /healthz` | 无 | 健康检查：有 healthy 且未占满账号返回 200，否则 503；响应带身份标识（见下） |
 
 > 鉴权规则：仅当 `api_key` 非空才校验 `Authorization: Bearer <api_key>`；**`api_key` 为空时上述端点直接放行**；`/healthz` 恒无鉴权。
+
+### Codex / Claude 原生联网搜索适配
+
+- **Codex（独立搜索）**：Codex 将 `POST alpha/search` 拼到配置的 API Base URL 后；例如 Base URL 为 `https://wb2a.example.com/v1` 时，请求命中 `/v1/alpha/search`。网关接收 `commands.search_query`（多 query），调用 WorkBuddy 账号池中的搜索能力，构造 Codex 接受的 `output` 文本和 `results`（`text_result`）引用。HTTP 页面 `open` / `click` / `find` 提供受限导航，仅访问经过公网 DNS/IP 过滤的 HTTP(S) 页面，拒绝私网地址和非标准端口。会话搜索引用在内存中保留 20 分钟；容器重启后失效。
+- **Claude（服务端 WebSearch）**：原生 `POST /v1/messages` / `POST /messages` 检测 `web_search_20250305` / `web_search_20260209` / `web_search_20260318`，向现有模型管线提供内部搜索函数；若模型调用搜索，网关执行后把结果回填供模型继续作答。最终响应包含 `server_tool_use`、`web_search_tool_result`、来源引用和最终文字；支持非流式 JSON 和 Anthropic SSE 事件。未声明 WebSearch 的会话保持原有流式管线不变。
+- **局限**：WorkBuddy 的搜索端点只提供网页摘要，不支持 Codex `image_query` / PDF 截图 / 财经、天气、体育等专用检索；这些操作会返回明确的不支持信息。Codex `recency` 不强制过滤，而会在输出中明确提示；域名筛选只在上游返回的结果中进行本地过滤，因此不能保证召回完整。Claude 新版动态过滤、加密源内容、`allowed_callers`、地理位置定向也不能模拟官方行为。Claude 搜索轮次先缓冲完成再输出符合协议的 SSE（不是实时 token 级流式），最多执行五次搜索，并受 100 秒请求超时约束；仅靠搜索代理无法提供官方模型的完整服务器工具能力。
 
 `/healthz` 响应示例（200 / 503 同结构，仅状态码与计数变化）：
 

@@ -36,6 +36,12 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "read body: "+err.Error())
 		return
 	}
+	// Handle native Anthropic server-side web search within this Messages turn.
+	// Requests without the web_search server tool retain the original streaming
+	// and non-streaming path unchanged.
+	if h.maybeNativeWebSearch(w, r, body) {
+		return
+	}
 	chat, err := messagesToChat(body)
 	if err != nil {
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())

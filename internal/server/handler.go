@@ -112,9 +112,10 @@ const ServiceName = "workbuddy2api"
 
 // Handler 主路由。
 type Handler struct {
-	cfg     Config
-	mux     *http.ServeMux
-	degrade degradeGate
+	cfg       Config
+	mux       *http.ServeMux
+	degrade   degradeGate
+	codexRefs codexSearchIndex
 	// wafIP WAF IP 级拦截状态机（fail-fast，wafip.go）：短窗多号 WAF 403 →
 	// 激活期轮转遇 WAF 403 直接终止（不放大请求量）。进程内状态、重启清零。
 	wafIP wafIPGate
@@ -139,6 +140,9 @@ func NewHandler(cfg Config) *Handler {
 	h.mux.HandleFunc("POST /v1/responses", h.withAuth(h.responses))
 	h.mux.HandleFunc("POST /v1/messages", h.withAnthropicAuth(h.messages))
 	h.mux.HandleFunc("POST /v1/search/messages", h.withAnthropicAuth(h.searchMessages))
+	h.mux.HandleFunc("POST /alpha/search", h.withAuth(h.codexAlphaSearch))
+	h.mux.HandleFunc("POST /v1/alpha/search", h.withAuth(h.codexAlphaSearch))
+	h.mux.HandleFunc("POST /backend-api/codex/alpha/search", h.withAuth(h.codexAlphaSearch))
 	h.mux.HandleFunc("POST /messages", h.withAnthropicAuth(h.messages))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
@@ -150,9 +154,9 @@ func NewHandler(cfg Config) *Handler {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h.cfg.RequestLog != nil && r.Method == http.MethodPost && (r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/responses" || r.URL.Path == "/v1/messages" || r.URL.Path == "/messages" || r.URL.Path == "/v1/search/messages") {
+	if h.cfg.RequestLog != nil && r.Method == http.MethodPost && (r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/responses" || r.URL.Path == "/v1/messages" || r.URL.Path == "/messages" || r.URL.Path == "/v1/search/messages" || r.URL.Path == "/alpha/search" || r.URL.Path == "/v1/alpha/search" || r.URL.Path == "/backend-api/codex/alpha/search") {
 		trace := &requestTrace{id: reqlog.NewRequestID(), start: time.Now(), path: r.URL.Path}
-		if r.URL.Path == "/v1/search/messages" {
+		if r.URL.Path == "/v1/search/messages" || r.URL.Path == "/alpha/search" || r.URL.Path == "/v1/alpha/search" || r.URL.Path == "/backend-api/codex/alpha/search" {
 			trace.model = searchToolLabel
 		}
 		if h.loadLive().RecordClientInfo {
