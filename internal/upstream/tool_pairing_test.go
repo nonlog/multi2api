@@ -214,6 +214,77 @@ func TestPrepareBodyMergesSplitParallelToolCalls(t *testing.T) {
 
 // TestRepackToolResultBlocks 结果之间的插入消息必须挪到整组之后（上游判配对断裂的另一形态）。
 func TestRepackToolResultBlocks(t *testing.T) {
+	t.Run("first tool output preceded by Codex developer notices", func(t *testing.T) {
+		// Real Codex Desktop/CLI Responses histories (2026-10-18) may have
+		// developer/system messages after function_call and BEFORE its first
+		// function_call_output. The call_id itself matches. Without moving
+		// these notices, WorkBuddy DeepSeek returns HTTP 400 code=11148.
+		in := msgs(t, `[
+			{"role":"user","content":"read docs"},
+			{"role":"assistant","content":"","tool_calls":[{"id":"call_123","type":"function","function":{"name":"exec_command","arguments":"{}"}}]},
+			{"role":"system","content":"sandbox metadata"},
+			{"role":"developer","content":"post-tool hook metadata"},
+			{"role":"tool","tool_call_id":"call_123","content":"read succeeded"},
+			{"role":"user","content":"summarize"}
+		]`)
+		out, changed := repackToolResultBlocks(in)
+		if !changed {
+			t.Fatal("pre-result metadata must be moved after matching result")
+		}
+		assertSummary(t, summarize(out), []string{
+			"user(-)", "assistant(call_123)", "tool(call_123)",
+			"system(-)", "developer(-)", "user(-)",
+		})
+		// Test the full preflight pipeline, including the role normalization,
+		// assistant/tool match cleanup, and stable ordering.
+		body := `{"model":"deepseek-v4.1-flash","messages":[
+			{"role":"user","content":"read docs"},
+			{"role":"assistant","content":"","tool_calls":[{"id":"call_123","type":"function","function":{"name":"exec_command","arguments":"{}"}}]},
+			{"role":"developer","content":"tool lifecycle metadata"},
+			{"role":"tool","tool_call_id":"call_123","content":"read succeeded"},
+			{"role":"user","content":"summarize"}
+		]}`
+		wire := PrepareBodyOptWithEfforts([]byte(body), false, nil)
+		var decoded map[string]any
+		if err := json.Unmarshal(wire, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		msgs := decoded["messages"].([]any)
+		assertSummary(t, summarize(msgs), []string{
+			"user(-)", "assistant(call_123)", "tool(call_123)",
+			"system(-)", "user(-)",
+		})
+	})
+
+	t.Run("client turn boundary is not treated as movable metadata", func(t *testing.T) {
+		in := msgs(t, `[
+			{"role":"assistant","content":"","tool_calls":[{"id":"c1"}]},
+			{"role":"user","content":"a new request"},
+			{"role":"tool","tool_call_id":"c1","content":"stale result"}
+		]`)
+		out, changed := repackToolResultBlocks(in)
+		if changed {
+			t.Fatalf("user boundary must not move: %v", summarize(out))
+		}
+		assertSummary(t, summarize(out), []string{
+			"assistant(c1)", "user(-)", "tool(c1)",
+		})
+	})
+
+	t.Run("missing first result preserves original message order", func(t *testing.T) {
+		in := msgs(t, `[
+			{"role":"assistant","content":"","tool_calls":[{"id":"c1"}]},
+			{"role":"developer","content":"notice"},
+			{"role":"user","content":"start new turn"}
+		]`)
+		out, changed := repackToolResultBlocks(in)
+		if changed {
+			t.Fatalf("no matching tool result; no speculative move: %v", summarize(out))
+		}
+		assertSummary(t, summarize(out), []string{
+			"assistant(c1)", "developer(-)", "user(-)",
+		})
+	})
 	t.Run("插在结果中间的消息后移", func(t *testing.T) {
 		in := msgs(t, `[
 			{"role":"assistant","content":null,"tool_calls":[{"id":"c00"},{"id":"c01"}]},

@@ -85,7 +85,22 @@ func repackToolResultBlocks(messages []any) ([]any, bool) {
 				continue
 			}
 			if len(results) == 0 {
-				break // assistant 后没有结果：交由 cleanupOrphanToolCalls 处理
+				// Codex Responses history can insert a developer/system
+				// context notice BETWEEN an assistant's function_call and
+				// its very first function_call_output. The adapter turns
+				// those notices into Chat system messages. DeepSeek rejects
+				// any intervening message with error 11148 even when the
+				// call_id matches exactly. Defer only these metadata roles
+				// until we see the matching tool result. A user or assistant
+				// message is a real turn boundary and must never be moved
+				// across an unfulfilled tool call.
+				if role == "system" || role == "developer" {
+					between = append(between, messages[i])
+					sawNonTool = true
+					i++
+					continue
+				}
+				break // no matching tool result before a turn boundary
 			}
 			// 下一组 assistant.tool_calls 是新的组头，绝不能当插入物吞掉：一旦被收进
 			// between，它永远不再被外层循环当作组头处理，它自己那批结果也就永远得不
