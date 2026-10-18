@@ -159,21 +159,12 @@ func TestResponsesNamespaceDSMLUnknownToolRejected(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses",
 		strings.NewReader(codexNamespaceRequest(t, false))))
-	if rec.Code != 200 {
-		t.Fatalf("http=%d body=%s", rec.Code, rec.Body)
-	}
-	if !strings.Contains(rec.Body.String(), "DSML") {
-		t.Fatalf("unknown tool should remain literal text, not execute: %s", rec.Body)
-	}
-	var obj map[string]any
-	if json.Unmarshal(rec.Body.Bytes(), &obj) != nil {
-		t.Fatal("not valid JSON")
-	}
-	for _, raw := range obj["output"].([]any) {
-		item, _ := raw.(map[string]any)
-		if item["type"] == "function_call" || item["type"] == "custom_tool_call" {
-			t.Fatalf("undeclared tool bypassed allowlist: %v", item)
-		}
+	// Native Responses no longer treats an undeclared DSML call as a valid
+	// completed answer. Plain Chat remains unchanged; Codex receives a
+	// structured error and cannot accidentally dispatch this tool.
+	if rec.Code != 502 || !strings.Contains(rec.Body.String(), "invalid_tool_call") ||
+		strings.Contains(rec.Body.String(), "DSML") {
+		t.Fatalf("undeclared tool must fail safely: HTTP %d, body=%s", rec.Code, rec.Body)
 	}
 }
 
@@ -182,8 +173,9 @@ func TestResponsesNamespaceDSMLSpoofedNamespaceRejected(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses",
 		strings.NewReader(codexNamespaceRequest(t, false))))
-	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "DSML") {
-		t.Fatalf("unexpected conversion of spoofed namespace: code=%d body=%s", rec.Code, rec.Body)
+	if rec.Code != 502 || !strings.Contains(rec.Body.String(), "invalid_tool_call") ||
+		strings.Contains(rec.Body.String(), "DSML") {
+		t.Fatalf("spoofed namespace must fail safely: code=%d body=%s", rec.Code, rec.Body)
 	}
 }
 
