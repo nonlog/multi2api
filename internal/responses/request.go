@@ -35,7 +35,11 @@ func (m *Meta) IsCustomTool(name string) bool {
 	if m == nil || m.CustomTools == nil {
 		return false
 	}
-	return m.CustomTools[name]
+	if m.CustomTools[name] {
+		return true
+	}
+	bare, ns := ResolveNamespacedName(name, m.NamespaceMap)
+	return ns != "" && m.CustomTools[bare]
 }
 
 // NamespaceOf 返回工具名所属的 namespace（无则空串）。

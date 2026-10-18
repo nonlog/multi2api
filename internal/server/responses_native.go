@@ -35,7 +35,9 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	r2 := r.Clone(r.Context())
+	// Preserve tool namespace aliases for the native DSML repair layer. Codex
+	// can emit "mcp__codex_apps__tool" even when the Chat tool is "tool".
+	r2 := r.Clone(withResponsesNamespaceTools(r.Context(), meta.NamespaceMap))
 	r2.Body = io.NopCloser(bytes.NewReader(chat))
 	r2.ContentLength = int64(len(chat))
 

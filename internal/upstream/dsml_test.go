@@ -190,6 +190,26 @@ func TestMarkupRepairUnknownToolNameStaysText(t *testing.T) {
 	}
 }
 
+func TestMarkupRepairRejectionDiagnostic(t *testing.T) {
+	r := NewMarkupRepair(map[string]bool{"exec_command": true}, true)
+	in := mkBlock(mkInvoke("mcp__codex_apps__chat_on_steroids_core",
+		mkParam("name", "Get-Content")))
+	text, calls := r.Feed(in)
+	if len(calls) != 0 || text != in || r.Rejected() != 1 {
+		t.Fatalf("undeclared tool should remain text: %q calls=%v", text, calls)
+	}
+	reason, name := r.LastRejection()
+	if reason != "undeclared_tool" || name != "mcp__codex_apps__chat_on_steroids_core" {
+		t.Fatalf("diagnostic mismatch: reason=%q name=%q", reason, name)
+	}
+
+	r = NewMarkupRepair(map[string]bool{"exec_command": true}, true)
+	r.Feed(mkBlock(mkInvoke("exec_command", mkParam("cmd", "ok"))))
+	if reason, name := r.LastRejection(); reason != "" || name != "" {
+		t.Fatalf("successful repair must not report a rejection: %q %q", reason, name)
+	}
+}
+
 func TestMarkupRepairProseInsideBlockStaysText(t *testing.T) {
 	// 块里夹带正文 → 不是纯调用，整块原文透出。
 	in := markupOpen + "\n我先说明一下：\n" + mkInvoke("exec_command", mkParam("cmd", "pwd")) + "\n" + markupClose

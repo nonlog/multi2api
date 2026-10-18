@@ -541,7 +541,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 与「会话历史里出现过的工具名」两个来源——实测 tools 声明会在中转环节丢失，
 	// 只认前者会让修复层在最需要它的场景下失效。
 	// 在提示词/模型名改写之前取（那些改写不动 tools / messages[].tool_calls 子树）。
-	declaredTools := upstream.ToolNameAllowlist(body)
+	declaredTools := allowlistedResponseTools(r.Context(), body)
 
 	// realm 前缀解析（D6）：model 名可能带 "[realm:]" 前缀。剥出 realm + bareModel，
 	// bareModel 用于选号/粘性/出站 body 重写（前缀是网关侧路由协议，上游只认裸名）。
@@ -1053,8 +1053,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			} else if m := repair.Seen(); m > 0 {
 				// 识别到标记却没还原：说明判定没过（工具名不合规 / 块内夹带正文 /
 				// 参数畸形）。单独记一行，排障时能一眼区分「没识别到」与「识别到但拒绝」。
-				log.Printf("WARN: [server] stream acct=%s model=%s: saw %d native tool call block(s) but repaired none (tool names known=%d)",
-					logfmt.Label(acct.UID, acct.Nickname), bareModel, m, len(declaredTools))
+				reason, rejectedName := repair.LastRejection()
+				log.Printf("WARN: [server] stream acct=%s model=%s: saw %d native tool call block(s) but repaired none (tool names known=%d, reason=%s, rejected_tool=%q)",
+					logfmt.Label(acct.UID, acct.Nickname), bareModel, m, len(declaredTools), reason, rejectedName)
 			}
 			st.ttfb = stats.TTFB()
 			// usage 缺失时保留 chatStat.toks 的 -1 哨兵（观测缺失 → 显示 "-"），
@@ -1093,8 +1094,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			log.Printf("INFO: [server] non-stream model=%s: repaired %d native tool call(s) from assistant text (tool names known=%d)",
 				bareModel, n, len(declaredTools))
 		} else if m := mrepair.Seen(); m > 0 {
-			log.Printf("WARN: [server] non-stream model=%s: saw %d native tool call block(s) but repaired none (tool names known=%d)",
-				bareModel, m, len(declaredTools))
+			reason, rejectedName := mrepair.LastRejection()
+			log.Printf("WARN: [server] non-stream model=%s: saw %d native tool call block(s) but repaired none (tool names known=%d, reason=%s, rejected_tool=%q)",
+				bareModel, m, len(declaredTools), reason, rejectedName)
 		}
 		credit, total, hasCredit := usageCreditTotal(resp)
 		if usage, ok := resp["usage"].(map[string]any); ok {

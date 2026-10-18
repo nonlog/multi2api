@@ -329,6 +329,7 @@ func TestResolveNamespacedName(t *testing.T) {
 		{"list_threads", "list_threads", "codex_app"},
 		{"codex_app__list_threads", "list_threads", "codex_app"},
 		{"codex_app::js", "js", "codex_app"},
+		{"other_app::js", "other_app::js", ""},
 		{"other", "other", ""},
 	}
 	for _, c := range cases {
@@ -336,5 +337,21 @@ func TestResolveNamespacedName(t *testing.T) {
 		if name != c.wantName || ns != c.wantNS {
 			t.Errorf("ResolveNamespacedName(%q) = (%q,%q), want (%q,%q)", c.in, name, ns, c.wantName, c.wantNS)
 		}
+	}
+}
+
+func TestMetaCustomToolNamespacedAlias(t *testing.T) {
+	m := &Meta{
+		CustomTools:  map[string]bool{"chat_on_steroids_core": true},
+		NamespaceMap: map[string]string{"chat_on_steroids_core": "mcp__codex_apps"},
+	}
+	if !m.IsCustomTool("mcp__codex_apps__chat_on_steroids_core") ||
+		!m.IsCustomTool("mcp__codex_apps::chat_on_steroids_core") ||
+		!m.IsCustomTool("chat_on_steroids_core") {
+		t.Fatal("a namespaced custom tool must remain custom when the model prefixes it")
+	}
+	if m.IsCustomTool("other_namespace::chat_on_steroids_core") ||
+		m.IsCustomTool("mcp__codex_apps__not_declared") {
+		t.Fatal("custom tools must reject namespace spoofing")
 	}
 }

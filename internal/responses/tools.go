@@ -126,10 +126,10 @@ func ResolveNamespacedName(name string, mapping map[string]string) (string, stri
 	}
 	if idx := strings.Index(name, "::"); idx > 0 {
 		tail, head := name[idx+2:], name[:idx]
-		if ns, ok := mapping[tail]; ok {
+		if ns, ok := mapping[tail]; ok && ns == head {
 			return tail, ns
 		}
-		return tail, head
+		return name, ""
 	}
 	for tool, ns := range mapping {
 		if name == ns+nsSep+tool {

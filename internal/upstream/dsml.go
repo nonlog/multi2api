@@ -98,6 +98,8 @@ type MarkupRepair struct {
 	seen         int    // 识别到的标记块数（含被拒绝的）
 	rejected     int    // 识别到但未转换的块数（观测/排障用）
 	converted    int    // 已还原的调用数（观测用）
+	rejectReason string // 只记录分类，不记录工具参数/对话正文
+	rejectedName string // 仅保存满足标识符校验的工具名，不保存参数
 }
 
 // NewMarkupRepair 按客户端声明的工具名构造修复器。
@@ -139,6 +141,32 @@ func (r *MarkupRepair) Rejected() int {
 		return 0
 	}
 	return r.rejected
+}
+
+// LastRejection 给运维一条安全的失败线索：名称只来自长度受限的工具标识符，
+// 不记录 JSON 参数或模型正文。可区分「工具不在名单」与「标记语法不完整」。
+func (r *MarkupRepair) LastRejection() (reason, toolName string) {
+	if r == nil {
+		return "", ""
+	}
+	return r.rejectReason, r.rejectedName
+}
+
+func markupRejectDiagnostic(inner string, allowed map[string]bool) (reason, toolName string) {
+	invokes := markupInvokeRe.FindAllStringSubmatch(inner, -1)
+	if len(invokes) == 0 {
+		return "invalid_invoke", ""
+	}
+	for _, invoke := range invokes {
+		name := invoke[1]
+		if !markupToolNameRe.MatchString(name) {
+			return "invalid_tool_name", ""
+		}
+		if len(allowed) > 0 && !allowed[name] {
+			return "undeclared_tool", name
+		}
+	}
+	return "invalid_block_structure", ""
 }
 
 // Feed 吃进一段正文增量，返回「应当作为正文透出的部分」与「还原出来的工具调用」。
@@ -195,6 +223,7 @@ func (r *MarkupRepair) Feed(text string) (string, []MarkupCall) {
 		}
 		// 块内不是纯调用（夹带正文 / 工具名不合规 / 参数畸形）：原文回吐，绝不吞字节。
 		r.rejected++
+		r.rejectReason, r.rejectedName = markupRejectDiagnostic(inner, r.allowed)
 		emit.WriteString(markupOpen)
 		emit.WriteString(inner)
 		emit.WriteString(markupClose)
