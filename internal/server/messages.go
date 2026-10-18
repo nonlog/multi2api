@@ -292,7 +292,7 @@ func blocksToMessages(role string, blocks []any) []any {
 			toolMsgs = append(toolMsgs, map[string]any{
 				"role":         "tool",
 				"tool_call_id": asString(m["tool_use_id"]),
-				"content":      toolResultContent(m["content"], m["is_error"]),
+				"content":      toolResultChatContent(m["content"], m["is_error"]),
 			})
 		case "image":
 			hasNonText = true
@@ -380,6 +380,56 @@ func toolResultContent(v any, isError any) string {
 	return s
 }
 
+// toolResultChatContent retains images as OpenAI multimodal image_url parts
+// instead of flattening their Base64 payload into a TEXT tool result.
+//
+// This is critical for Pi/Claude Messages clients: a 695 KB PNG returned by
+// the read tool was previously converted to a 695 KB data:image/... string.
+// DeepSeek billed it as ~500K text tokens and the client's 400K context
+// budget clamped the *next* request's max_tokens to 1.
+//
+// Plain text-only tool results remain strings, preserving existing behavior.
+// Mixed text/image results keep their original block order and tool_call_id.
+func toolResultChatContent(v any, isError any) any {
+	blocks, ok := v.([]any)
+	if !ok {
+		return toolResultContent(v, isError)
+	}
+	parts := make([]any, 0, len(blocks)+1)
+	hasImage := false
+	for _, raw := range blocks {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if asString(m["type"]) == "image" {
+			img := imagePart(m)
+			url := asString(img["image_url"].(map[string]any)["url"])
+			if url != "" {
+				parts = append(parts, img)
+				hasImage = true
+				continue
+			}
+			parts = append(parts, map[string]any{"type": "text", "text": "[image attachment unavailable]"})
+			continue
+		}
+		text := blockText(m)
+		if asString(m["type"]) == "document" {
+			text = documentText(m)
+		}
+		if text != "" {
+			parts = append(parts, map[string]any{"type": "text", "text": text})
+		}
+	}
+	if !hasImage {
+		return toolResultContent(v, isError)
+	}
+	if failed, ok := isError.(bool); ok && failed {
+		parts = append([]any{map[string]any{"type": "text", "text": "error: "}}, parts...)
+	}
+	return parts
+}
+
 func contentToString(v any) string {
 	switch t := v.(type) {
 	case string:
@@ -393,10 +443,10 @@ func contentToString(v any) string {
 			}
 			switch asString(m["type"]) {
 			case "image":
-				img := imagePart(m)
-				if u, ok := img["image_url"].(map[string]any); ok {
-					b.WriteString(asString(u["url"]))
-				}
+				// Text-only fallbacks must never expand image Base64 data into
+				// prompt tokens. Images in actual tool results are preserved as
+				// image_url parts by toolResultChatContent above.
+				b.WriteString("[image attachment]")
 			case "document":
 				b.WriteString(documentText(m))
 			default:

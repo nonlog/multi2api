@@ -757,7 +757,9 @@ http://127.0.0.1:7863/panel/
 此 Fork 在不修改 WorkBuddy 上游调用协议的前提下，通过原生入口处理 **Responses API** 和 **Anthropic Messages API**。`/v1/chat/completions` 继续保持兼容，并且三种入站都复用现有账号池、模型路由、限流、会话粘性、请求日志和上游流式修复。
 
 - **Responses**：通过 `POST /v1/responses` 调用，支持 Codex CLI / App 的 `function_call`、`custom_tool_call`、namespace 工具及对应流式事件。`prompt_cache_key` 会传递到现有会话层。适配代码基于关闭的 [PR #109](https://github.com/linguo2625469/workbuddy2api-panel/pull/109)（感谢原作者）。
-- **Messages**：通过 `POST /v1/messages` 或 `POST /messages` 调用，支持 Anthropic Messages 的 `x-api-key` 鉴权、`tool_use` / `tool_result` 和事件流。适配代码基于关闭的 [PR #63](https://github.com/linguo2625469/workbuddy2api-panel/pull/63)（感谢原作者）。
+- **Messages**：通过 `POST /v1/messages` 或 `POST /messages` 调用，支持 Anthropic Messages 的 `x-api-key` 鉴权、`tool_use` / `tool_result`（含文本 + 图片混合结果）和事件流。图片工具结果被保留为 OpenAI `image_url` 多模态块，**不会把 Base64 直接拼入 text**；仅文本的工具结果仍使用字符串，兼容原有行为。适配代码基于关闭的 [PR #63](https://github.com/linguo2625469/workbuddy2api-panel/pull/63)（感谢原作者）。
+
+**Pi 大上下文注意**：如果自定义模型的 `contextWindow` 小于上游模型的真实窗口，Pi 会根据对话内容估算输出余量并将 `max_tokens` 最低钳制到 **1**；此时代理仍可能正常返回 HTTP 200 / Anthropic `stop_reason: max_tokens`，但 Pi 会提示回复截断。2026-10-18 事故中 Pi 将 `deepseek-v4.1-flash` 配为 400K、后端 CN 模型实际为 1M，`read` 工具返回的 695KB PNG 又被旧转换器当作 Base64 文本，输入暴涨到 525K Token。新转换器修复图像类型；Pi 端的 `contextWindow` 也应与实际模型容量一致，且需要重新加载模型配置。不要因 HTTP 200 就把 `stop_reason: max_tokens` 视作成功完成的回答。
 - **限制**：Responses 的 `store` / `previous_response_id` 不提供服务端存储和续接；Claude 原生 thinking 签名不可由 Chat 上游生成；内置服务端 `web_search` / `code_execution` 工具不在此网关本地执行，部分 Chat 不支持的特殊字段无法无损映射。原生入站意味着免去 NewAPI 的外部入站转换层，**不意味着上游拥有完整的 Responses / Anthropic 原生能力**。
 
 ## 🔌 API 端点
