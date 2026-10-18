@@ -186,3 +186,88 @@ func TestResponsesNamespaceDSMLSpoofedNamespaceRejected(t *testing.T) {
 		t.Fatalf("unexpected conversion of spoofed namespace: code=%d body=%s", rec.Code, rec.Body)
 	}
 }
+
+func TestResponsesInvokeStringFlagProductionVariant(t *testing.T) {
+	// The 13:52 Codex incident had an invocation attribute that the old
+	// parser refused, even though the tool was already declared.
+	const tool = codexPrefixedToolName
+	oldTag := `invoke name="` + tool + `">`
+	newTag := `invoke name="` + tool + `" string="true">`
+	content := strings.Replace(codexIncidentMarkup(tool), oldTag, newTag, 1)
+	for _, stream := range []bool{true, false} {
+		up := newFakeUpstream(t, func(string) (int, string, bool) {
+			return 200, markupUpstreamSSE("Starting a safe read.\n" + content), true
+		})
+		h := NewHandler(Config{
+			Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
+			Upstream: up,
+		})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses",
+			strings.NewReader(codexNamespaceRequest(t, stream))))
+		if rec.Code != 200 || strings.Contains(rec.Body.String(), "DSML") {
+			t.Fatalf("stream=%v invalid: HTTP %d, body=%s", stream, rec.Code, rec.Body)
+		}
+		if stream {
+			if !strings.Contains(rec.Body.String(), `"namespace":"`+codexNamespaceName+`"`) ||
+				!strings.Contains(rec.Body.String(), `"type":"function_call"`) ||
+				!strings.Contains(rec.Body.String(), "response.completed") {
+				t.Fatalf("streamed native function_call missing: %s", rec.Body)
+			}
+		} else {
+			var obj map[string]any
+			if json.Unmarshal(rec.Body.Bytes(), &obj) != nil {
+				t.Fatal("invalid nonstream response")
+			}
+			items, _ := obj["output"].([]any)
+			found := false
+			for _, raw := range items {
+				item, _ := raw.(map[string]any)
+				if item["type"] == "function_call" && item["name"] == codexBareToolName &&
+					item["namespace"] == codexNamespaceName {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("no namespaced function call in %v", obj["output"])
+			}
+		}
+	}
+}
+
+func TestResponsesUndeclaredExecFailsInsteadOfCompleting(t *testing.T) {
+	// The 13:53 Codex Desktop reply invented the name "exec" with command,
+	// workdir and timeout_ms, while 185 *other* tools were declared.
+	const pipe = "\uFF5C\uFF5C"
+	tag := func(value string) string { return "<" + pipe + "DSML" + pipe + " " + value + ">" }
+	end := func(value string) string { return "</" + pipe + "DSML" + pipe + " " + value + ">" }
+	block := tag("calls") + "\n" + tag(`invoke name="exec"`) + "\n" +
+		tag(`parameter name="command" string="true"`) + "echo hello" + end("parameter") + "\n" +
+		tag(`parameter name="workdir" string="true"`) + "C:/test" + end("parameter") + "\n" +
+		tag(`parameter name="timeout_ms" string="false"`) + "20000" + end("parameter") + "\n" +
+		end("invoke") + "\n" + end("calls")
+	for _, stream := range []bool{true, false} {
+		up := newFakeUpstream(t, func(string) (int, string, bool) {
+			return 200, markupUpstreamSSE("I will inspect the files.\n" + block), true
+		})
+		h := NewHandler(Config{
+			Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
+			Upstream: up,
+		})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses",
+			strings.NewReader(codexNamespaceRequest(t, stream))))
+		if strings.Contains(rec.Body.String(), "DSML") {
+			t.Fatalf("stream=%v leaked rejected tool markup: %s", stream, rec.Body)
+		}
+		if stream {
+			if rec.Code != 200 || !strings.Contains(rec.Body.String(), "response.failed") ||
+				strings.Contains(rec.Body.String(), "response.completed") ||
+				!strings.Contains(rec.Body.String(), "invalid_tool_call") {
+				t.Fatalf("rejected stream must fail instead of completing: HTTP %d, body=%s", rec.Code, rec.Body)
+			}
+		} else if rec.Code != 502 || !strings.Contains(rec.Body.String(), "invalid_tool_call") {
+			t.Fatalf("rejected nonstream must return HTTP 502: code=%d body=%s", rec.Code, rec.Body)
+		}
+	}
+}

@@ -470,11 +470,13 @@ curl -s http://localhost:7863/v1/chat/completions \
 
 还原还受三条硬性前提约束：本回合上游没有给出任何结构化 `tool_calls`（不覆盖真实调用）、块内除 invoke/parameter 与空白外不夹带正文、非流式额外要求 `finish_reason` 为 `stop`。**任何一条不满足即原文逐字节透出**——未闭合、参数畸形、超长（>256KB）一律回吐，修复层绝不吞字节。
 
+针对 **Codex 原生 Responses** 有额外防护（不改变普通 Chat Completions）：当客户端明确声明工具，但模型仍把一个未被认可的 DSML 调用块当作正文返回时，流式改为 `response.failed`（`invalid_tool_call`），非流式返回 HTTP 502，而不是再给出错误的 `response.completed` 让 Codex 无声停止。此行为不会把未声明的 `exec` 等名称猜测映射到本机命令工具。对于 Codex + DeepSeek 请求，网关还会以简短系统提示提醒模型遵守已声明工具的精确名称和参数格式；无法保证上游模型一定遵守，但错误不会再伪装成正常完成。DSML `invoke` 标签兼容 `string="true"` 或 `string="false"` 标记。
+
 命中与否各记一行日志，便于排障时区分「没识别到」与「识别到但判定不通过」：
 
 ```text
 INFO: [server] stream ...: repaired N native tool call(s) from assistant text (tool names known=K)
-WARN: [server] stream ...: saw M native tool call block(s) but repaired none (tool names known=K)
+WARN: [server] stream ...: saw M native tool call block(s) but repaired none (tool names known=K, reason=..., rejected_tool=...)
 ```
 
 ### 错误分类与账号处置

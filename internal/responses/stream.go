@@ -14,6 +14,11 @@ import (
 // ErrEmptyStream 上游返回 200 但没有任何有效帧。
 var ErrEmptyStream = errors.New("responses: empty upstream stream")
 
+// ErrRejectedToolCall identifies an intentionally rejected native tool
+// invocation. The Responses wrapper drains the already-started upstream Chat
+// producer on this error, rather than classifying it as a client disconnect.
+var ErrRejectedToolCall = errors.New("responses: undeclared or malformed tool call")
+
 // toolState 一次工具调用的流式累积状态。
 type toolState struct {
 	outputIndex int
@@ -110,6 +115,14 @@ func Stream(w io.Writer, src io.Reader, meta *Meta, model string) error {
 			}
 		}
 		if piece := stringOf(delta["content"]); piece != "" {
+			if st.meta != nil && len(st.meta.Tools) > 0 && HasRejectedNativeToolMarkup(piece) {
+				// The upstream produced a *tool invocation* as plain text, but
+				// the repair layer could not safely match it to a declared tool.
+				// Never deliver a false successful turn to Codex.
+				failure := st.failWithCode("invalid_tool_call",
+					"upstream model emitted a malformed or undeclared tool invocation; retry using an exact declared tool name")
+				return errors.Join(ErrRejectedToolCall, failure)
+			}
 			if err := st.emitTextDelta(piece); err != nil {
 				return err
 			}
@@ -159,8 +172,12 @@ func (st *streamState) emit(name string, payload map[string]any) error {
 
 // fail 发出 response.failed 并返回错误。
 func (st *streamState) fail(msg string) error {
+	return st.failWithCode("upstream_error", msg)
+}
+
+func (st *streamState) failWithCode(code, msg string) error {
 	obj := st.responseObject("failed")
-	obj["error"] = map[string]any{"code": "upstream_error", "message": msg}
+	obj["error"] = map[string]any{"code": code, "message": msg}
 	_ = st.emit("response.failed", map[string]any{"response": obj})
 	return errors.New("responses: " + msg)
 }

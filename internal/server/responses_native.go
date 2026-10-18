@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -28,6 +29,7 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	chat = guideCodexDeepSeekToolNames(chat, r, meta)
 	var peek struct {
 		Stream bool `json:"stream"`
 	}
@@ -60,6 +62,19 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &chatResp); err != nil {
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", "invalid chat response: "+err.Error())
 			return
+		}
+		if len(meta.Tools) > 0 {
+			if choices, ok := chatResp["choices"].([]any); ok && len(choices) > 0 {
+				if choice, ok := choices[0].(map[string]any); ok {
+					if msg, ok := choice["message"].(map[string]any); ok {
+						if content, ok := msg["content"].(string); ok && responses.HasRejectedNativeToolMarkup(content) {
+							writeOpenAIError(w, http.StatusBadGateway, "invalid_tool_call",
+								"upstream model emitted a malformed or undeclared tool invocation; retry using an exact declared tool name")
+							return
+						}
+					}
+				}
+			}
 		}
 		writeJSON(w, http.StatusOK, responses.FromChat(chatResp, meta, model))
 		return
@@ -95,6 +110,13 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	streamErr := responses.Stream(w, pr, meta, model)
+	if errors.Is(streamErr, responses.ErrRejectedToolCall) {
+		// The model's completed tool block was rejected by the safe
+		// allowlist/grammar. Drain the remaining Chat frames for normal
+		// account bookkeeping and telemetry; only actual disconnections
+		// should abort upstream writes immediately.
+		_, _ = io.Copy(io.Discard, pr)
+	}
 	// If the client disconnects or translation fails, unblock the upstream
 	// producer, allowing the existing handler to record interruption correctly.
 	_ = pr.Close()

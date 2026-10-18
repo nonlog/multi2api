@@ -85,6 +85,40 @@ func TestMarkupRepairSingleCall(t *testing.T) {
 	}
 }
 
+// Production 2026-10-18 13:52:48 Codex Desktop: an otherwise valid
+// mcp__codex_apps__chat_on_steroids_core invocation carries string="true"
+// on the invoke tag itself. This must be parsed, not rejected as
+// invalid_invoke. Only known boolean values may appear after name.
+func TestMarkupRepairInvokeStringAttribute(t *testing.T) {
+	for _, flag := range []string{"true", "false"} {
+		invoke := "<" + markupPipe + "DSML" + markupPipe +
+			` invoke name="mcp__codex_apps__chat_on_steroids_core" string="` + flag + `">` +
+			mkParam("name", "Get-Content") + markupInvokeClose
+		in := markupOpen + invoke + markupClose
+		for _, chunks := range [][]string{{in}, {in[:23], in[23:45], in[45:]}} {
+			out, calls := repairAll(map[string]bool{
+				"mcp__codex_apps__chat_on_steroids_core": true,
+			}, chunks)
+			if out != "" || len(calls) != 1 || calls[0].Name != "mcp__codex_apps__chat_on_steroids_core" {
+				t.Fatalf("invoke string=%q produced out=%q calls=%v", flag, out, calls)
+			}
+			if argsOf(t, calls[0].Arguments)["name"] != "Get-Content" {
+				t.Fatalf("arguments changed: %+v", calls[0])
+			}
+		}
+	}
+}
+
+func TestMarkupRepairInvokeUnknownAttributeFailsClosed(t *testing.T) {
+	in := markupOpen + "<" + markupPipe + "DSML" + markupPipe +
+		` invoke name="exec_command" override="anything">` + mkParam("cmd", "echo ok") +
+		markupInvokeClose + markupClose
+	out, calls := repairAll(map[string]bool{"exec_command": true}, []string{in})
+	if out != in || len(calls) != 0 {
+		t.Fatalf("unknown invoke attribute must not be accepted; calls=%v", calls)
+	}
+}
+
 func TestMarkupRepairMultipleCallsAndOrder(t *testing.T) {
 	in := mkBlock(
 		mkInvoke("exec_command", mkParam("cmd", "pwd")),

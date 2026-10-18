@@ -65,10 +65,13 @@ const (
 var markupTagPrefix = regexp.QuoteMeta("<" + markupPipe + "DSML" + markupPipe)
 
 // markupInvokeRe 匹配 invoke 头：<PIPE>DSML<PIPE> invoke name="NAME">。
+// DeepSeek 也会在 invoke 标签上写 string="true"/"false"（见 2026-10-18
+// 13:52 Codex Desktop 实案）；这是调用级标记，不是参数，不能据此拒绝整个
+// 调用块。只允许精确枚举的这两个属性值，其他多余属性仍拒绝。
 // markupParamRe 匹配 parameter 头：<PIPE>DSML<PIPE> parameter name="NAME" string="true">，
 // 其中 string 属性可选（缺省按 JSON 解析取值）。
 var (
-	markupInvokeRe = regexp.MustCompile(markupTagPrefix + `\s+invoke\s+name="([^"]*)"\s*>`)
+	markupInvokeRe = regexp.MustCompile(markupTagPrefix + `\s+invoke\s+name="([^"]*)"(?:\s+string="(?:true|false)")?\s*>`)
 	markupParamRe  = regexp.MustCompile(markupTagPrefix + `\s+parameter\s+name="([^"]*)"(?:\s+string="(true|false)")?\s*>`)
 )
 
