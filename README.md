@@ -472,6 +472,8 @@ curl -s http://localhost:7863/v1/chat/completions \
 
 针对 **Codex 原生 Responses** 有额外防护（不改变普通 Chat Completions）：当客户端明确声明工具，但模型仍把一个未被认可的 DSML 调用块当作正文返回时，流式改为 `response.failed`（`invalid_tool_call`），非流式返回 HTTP 502，而不是再给出错误的 `response.completed` 让 Codex 无声停止。此行为不会把未声明的 `exec` 等名称猜测映射到本机命令工具。对于 Codex + DeepSeek 请求，网关还会以简短系统提示提醒模型遵守已声明工具的精确名称和参数格式；无法保证上游模型一定遵守，但错误不会再伪装成正常完成。DSML `invoke` 标签兼容 `string="true"` 或 `string="false"` 标记。
 
+Codex Desktop 的另一种实际故障（2026-10-20）是：DeepSeek 把完整的 DSML 工具调用写进 `reasoning_content`，普通正文只留下“我接下来会检查……”之类的进度话术。旧版本只修复 `delta.content`，因此客户端得到 `response.completed` 但没有收到工具调用，回合无错误地提前结束。新的 **原生 Responses** 适配还会在推理通道查找语法完整、**严格匹配本次请求已声明工具**的 DSML 调用，恢复成标准 `function_call` / `custom_tool_call`；分片调用也能恢复，命名空间还原与正文规则保持一致。如推理中出现不合法、未声明或未闭合的调用，改为明确报 `invalid_tool_call`，不会执行猜测出来的命令，也不会再返回假成功。原有 Chat Completions 与不携带工具的请求不受影响。修复日志只记录恢复数量及安全的工具名，不记录原始命令参数。
+
 命中与否各记一行日志，便于排障时区分「没识别到」与「识别到但判定不通过」：
 
 ```text

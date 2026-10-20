@@ -76,6 +76,12 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		if recovered, err := responses.RepairReasoningCallsInChat(chatResp, meta); err != nil {
+			writeOpenAIError(w, http.StatusBadGateway, "invalid_tool_call", err.Error())
+			return
+		} else if recovered > 0 {
+			log.Printf("INFO: [responses] recovered %d non-stream tool call(s) from reasoning_content", recovered)
+		}
 		writeJSON(w, http.StatusOK, responses.FromChat(chatResp, meta, model))
 		return
 	}

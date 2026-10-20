@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
+
+	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
 )
 
 // ErrEmptyStream 上游返回 200 但没有任何有效帧。
@@ -79,6 +82,14 @@ func Stream(w io.Writer, src io.Reader, meta *Meta, model string) error {
 
 	scanner := bufio.NewScanner(src)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	// The WorkBuddy DeepSeek upstream sometimes emits complete DSML tool
+	// invocations in reasoning_content rather than assistant content. The
+	// ordinary Chat repair only inspects content, so Codex sees a reasoning
+	// summary + response.completed and stops without executing the tool.
+	// Buffer recovered invocations until EOF to avoid duplicating native
+	// tool_calls that might appear later in the same stream.
+	reasonRepair := reasoningMarkupRepair(meta)
+	var recoveredReasonCalls []upstream.MarkupCall
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") {
@@ -110,8 +121,22 @@ func Stream(w io.Writer, src io.Reader, meta *Meta, model string) error {
 		}
 		st.frames++
 		if piece := stringOf(delta["reasoning_content"]); piece != "" {
-			if err := st.emitReasoningDelta(piece); err != nil {
-				return err
+			if reasonRepair != nil {
+				var recovered []upstream.MarkupCall
+				piece, recovered = reasonRepair.Feed(piece)
+				recoveredReasonCalls = append(recoveredReasonCalls, recovered...)
+				if reasonRepair.Rejected() > 0 {
+					reason, name := reasonRepair.LastRejection()
+					log.Printf("WARN: [responses] rejected reasoning tool markup (reason=%s, tool=%q)", reason, name)
+					failure := st.failWithCode("invalid_tool_call",
+						"upstream emitted a malformed or undeclared tool invocation in reasoning")
+					return errors.Join(ErrRejectedToolCall, failure)
+				}
+			}
+			if piece != "" {
+				if err := st.emitReasoningDelta(piece); err != nil {
+					return err
+				}
 			}
 		}
 		if piece := stringOf(delta["content"]); piece != "" {
@@ -144,6 +169,33 @@ func Stream(w io.Writer, src io.Reader, meta *Meta, model string) error {
 	}
 	if st.frames == 0 {
 		return ErrEmptyStream
+	}
+	if reasonRepair != nil {
+		tail := reasonRepair.Flush()
+		if reasonMarkupTailInvalid(reasonRepair, tail) {
+			log.Printf("WARN: [responses] incomplete or rejected reasoning tool markup at stream end")
+			failure := st.failWithCode("invalid_tool_call",
+				"upstream ended with a malformed or undeclared reasoning tool invocation")
+			return errors.Join(ErrRejectedToolCall, failure)
+		}
+		if tail != "" {
+			if err := st.emitReasoningDelta(tail); err != nil {
+				return err
+			}
+		}
+		if len(st.tools) == 0 && len(recoveredReasonCalls) > 0 {
+			for i, call := range recoveredReasonCalls {
+				name, _ := ResolveNamespacedName(call.Name, meta.NamespaceMap)
+				tc := map[string]any{
+					"index": float64(i), "id": newID("call_"),
+					"function": map[string]any{"name": name, "arguments": call.Arguments},
+				}
+				if err := st.emitToolDelta(tc); err != nil {
+					return err
+				}
+			}
+			log.Printf("INFO: [responses] recovered %d strictly declared tool call(s) from reasoning_content", len(recoveredReasonCalls))
+		}
 	}
 	return st.finalize()
 }
