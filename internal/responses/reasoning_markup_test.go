@@ -71,8 +71,12 @@ func TestReasoningDSMLRealCodexWriteStdinRecovery(t *testing.T) {
 	}}
 	markup := dsmlReasoningCall("write_stdin")
 	reason := "Checking the extracted installer and polling the process.\n\n" + markup
-	// Fragment the sentinel and invoke name across SSE frames.
-	parts := []string{reason[:15], reason[15:64], reason[64:90], reason[90:]}
+	// Fragment the sentinel and invoke name across SSE frames at Unicode
+	// boundaries. Slicing UTF-8 bytes inside U+FF5C would make the *test*
+	// itself generate invalid JSON text with replacement characters.
+	chars := []rune(reason)
+	parts := []string{string(chars[:15]), string(chars[15:64]),
+		string(chars[64:90]), string(chars[90:])}
 	var out bytes.Buffer
 	if err := Stream(&out, strings.NewReader(reasoningChatSSE(t, parts,
 		"I will continue inspecting the extracted package.")), meta, meta.Model); err != nil {
