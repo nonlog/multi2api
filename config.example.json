@@ -49,6 +49,12 @@
       ]
     }
   },
+  "providers": {
+    "enabled": false,
+    "auth_file": "./data/provider-auth.json",
+    "worker": "/app/integrations/provider-host/worker.mjs",
+    "bun": "bun"
+  },
   "upstream": {
     "timeout_seconds": 120,
     "header_timeout_seconds": 120,

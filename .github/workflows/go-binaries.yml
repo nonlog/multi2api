@@ -15,6 +15,7 @@ on:
       - "go.sum"
       - "cmd/**"
       - "internal/**"
+      - "integrations/**"
       - "config.example.json"
       - ".github/workflows/go-binaries.yml"
   workflow_dispatch:
@@ -36,6 +37,11 @@ jobs:
           go-version-file: go.mod
       # ubuntu runner 自带 node → panel 包的 JS 运行时冒烟测试（TestAppJSTopLevelSmoke）会真实执行
       - run: go test ./...
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.3"
+      - name: Integrated Provider protocol tests
+        run: bun test integrations/provider-host
 
   build:
     needs: test

@@ -129,6 +129,15 @@ type Config struct {
 		Aliases map[string][]string `json:"aliases"`
 	} `json:"model_mapping"`
 
+	// The optional plugin runtime is supervised by WorkBuddy2API itself,
+	// reachable only through a private Unix socket inside the same container.
+	Providers struct {
+		Enabled  bool   `json:"enabled"`
+		AuthFile string `json:"auth_file"`
+		Worker   string `json:"worker"`
+		Bun      string `json:"bun"`
+	} `json:"providers"`
+
 	Upstream struct {
 		// TimeoutSeconds 短 RPC（refresh/checkin/balance/FetchModels）总时长上限，默认 120。
 		TimeoutSeconds int `json:"timeout_seconds"`

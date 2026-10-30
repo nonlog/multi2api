@@ -21,6 +21,7 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/panel"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/providerhost"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/redisstore"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/reqlog"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/scheduler"
@@ -77,6 +78,20 @@ func main() {
 		log.Fatalf("load auths: %v", err)
 	}
 	log.Printf("loaded %d account(s) from %s", len(auths), cfg.AuthDir)
+
+	var externalProviders *providerhost.Host
+	if cfg.Providers.Enabled {
+		authFile := cfg.Providers.AuthFile
+		if authFile == "" {
+			authFile = stateSibling(cfg.StateFile, "provider-auth.json")
+		}
+		externalProviders, err = providerhost.Start(cfg.Providers.Bun, cfg.Providers.Worker, authFile)
+		if err != nil {
+			log.Fatalf("start integrated providers: %v", err)
+		}
+		defer externalProviders.Close()
+		log.Printf("integrated ZCode/Qoder/QwenWork/CodeArts providers enabled")
+	}
 
 	// redisstore：未配置/连接失败 → Noop（纯内存模式，一切功能照常）。
 	store := redisstore.New(cfg.Upstash.URL, cfg.Upstash.Token)
@@ -311,6 +326,7 @@ func main() {
 		// handler 侧第三道闸（global realm）：false（显式逃生门）时不列 global: 模型名。
 		GlobalEnabled: cfg.Global.Enabled,
 		ModelAliases:  cfg.ModelMapping.Aliases,
+		ProviderHost:  externalProviders,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

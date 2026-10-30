@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1
+FROM oven/bun:1.3-alpine AS bun-runtime
+
 FROM golang:1.23-alpine AS build
 WORKDIR /src
 COPY go.mod ./
@@ -12,7 +14,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/wb2api ./cmd/serve
 
 FROM alpine:3.20
 # python3：login.sh 的 JSON 解析 / 签到 / 落盘；bash：shell 脚本体。
-RUN apk add --no-cache wget ca-certificates tzdata python3 bash \
+RUN apk add --no-cache wget ca-certificates tzdata python3 bash libstdc++ \
  && adduser -D -u 10001 app \
  && mkdir -p /app/auths /app/data \
  && chown -R app:app /app
@@ -23,6 +25,9 @@ COPY --from=build /out/wb2api /app/wb2api
 COPY --from=build /out/signin_bin /app/signin_bin
 COPY --from=build /out/login /app/login
 COPY --from=build /out/credit /app/credit
+COPY --from=bun-runtime /usr/local/bin/bun /usr/local/bin/bun
+COPY integrations/magpie-plugins /app/integrations/magpie-plugins
+COPY integrations/provider-host /app/integrations/provider-host
 COPY login.sh signin.sh credit.sh /app/
 COPY scripts/probe_active.py /app/scripts/probe_active.py
 RUN sed -i 's/\r$//' /app/login.sh /app/signin.sh /app/credit.sh && chmod 755 /app/login.sh /app/signin.sh /app/credit.sh

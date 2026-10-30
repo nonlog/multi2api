@@ -16,6 +16,7 @@ on:
       - "go.sum"
       - "cmd/**"
       - "internal/**"
+      - "integrations/**"
       - "scripts/**"
       - "*.sh"
       - "config.example.json"

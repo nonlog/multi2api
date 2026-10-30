@@ -22,6 +22,7 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/providerhost"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/reqlog"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
@@ -65,6 +66,9 @@ type Config struct {
 	// ModelAliases provides downstream-id -> []realm-qualified upstream ids.
 	// When both cn and global are configured, normal pool selection spans both.
 	ModelAliases map[string][]string
+
+	// Optional built-in ZCode, Qoder, QwenWork and CodeArts plugins.
+	ProviderHost *providerhost.Host
 
 	// Usage 逐请求用量记录器（可选；nil = 不记录）。
 	// 在 recordAttempt 这一唯一汇聚点调用，因此流式/非流式、成功/失败都会计入，
@@ -149,6 +153,7 @@ func NewHandler(cfg Config) *Handler {
 	h.mux.HandleFunc("POST /backend-api/codex/alpha/search", h.withAuth(h.codexAlphaSearch))
 	h.mux.HandleFunc("POST /messages", h.withAnthropicAuth(h.messages))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
+	h.mux.HandleFunc("GET /v1/providers", h.withAuth(h.providerAccounts))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)
 	if cfg.Panel != nil {
@@ -298,6 +303,19 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) providerAccounts(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.ProviderHost == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "accounts": map[string]any{}})
+		return
+	}
+	accounts, err := h.cfg.ProviderHost.Accounts(r.Context())
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "provider_unavailable", "internal provider status unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "accounts": accounts})
+}
+
 // fmtCreditsPrefix 从上游 credits 原文提取倍率并格式化为 "[x0.05 credit]"。
 // 上游格式不统一："x0.05 credits" / "x0.29" / "x0.00 credits" 等，
 // 统一提取 x数字 部分，去 "credits" 后缀。
@@ -443,7 +461,11 @@ func (h *Handler) modelList() []map[string]any {
 			out = append(out, entry)
 		}
 	}
-	return mapModelListing(out, h.cfg.ModelAliases)
+	out = mapModelListing(out, h.cfg.ModelAliases)
+	if h.cfg.ProviderHost != nil {
+		out = append(out, h.cfg.ProviderHost.Models(context.Background())...)
+	}
+	return out
 }
 
 // fetchGlobalModels 返回 global 模型名单（纯动态探测结果）及被探测账号。
@@ -539,6 +561,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		Model  string `json:"model"`
 	}
 	_ = json.Unmarshal(body, &peek)
+	if provider, bare, ok := providerhost.ModelProvider(peek.Model); ok {
+		if h.cfg.ProviderHost == nil {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "provider_disabled",
+				"integrated provider is not enabled: "+provider)
+			return
+		}
+		h.cfg.ProviderHost.ProxyChat(w, r, body, provider, bare)
+		return
+	}
 
 	// 工具名名单：上游在没有 tools 的请求里会把工具调用吐成原生标记文本
 	// （见 upstream/dsml.go），修复层用它做严格判定。名单来自「本请求声明的 tools」

@@ -199,6 +199,24 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 
 上游对应修复：`7a8b7a7` + `d809396`（通道错误码字面量实际带连字符）以及 `3c4eb88`（refresh single-flight）。这些改动只用于当前 fork，并没有修改上游项目。已有原生 Responses、Anthropic Messages、联网搜索及自定义工具桥接保持不变。
 
+### 内置多 Provider 与模型统一映射
+
+本 fork 支持 `model_mapping.aliases` 把 WorkBuddy 的
+`cn:deepseek-v4.1-flash`、`global:deepseek-v4.1-flash`
+合并成唯一对外模型 `deepseek-v4.1-flash`。`/v1/models` 会去重，保留
+`routing_realms` 元数据；流式与非流式 Chat/Responses/Messages 均使用
+WorkBuddy 当前的健康账号、余额、模型限流和会话粘性池选择 CN/Global，
+旧前缀仍兼容但不在公开列表重复展示。只有实际探测到的模型才会列出。
+
+还可在**现有 WorkBuddy2API 服务内部**启用 ZCode、Qoder（含国内版）、
+千问办公 QwenWork、华为 CodeArts 插件。由 Go 服务统一鉴权和暴露
+`/v1/*` 接口，内部 Bun 插件宿主仅通过私有 Unix socket 工作，
+无需安装或运行独立 Magpie 网关。第三方协议实现来自
+[magpie-community/plugins](https://github.com/magpie-community/plugins) 的
+固定版本，来源、许可、凭据迁移和当前限制见
+`integrations/README.md`。默认关闭，启用需显式配置 `providers.enabled`
+与相应凭据文件，升级不会自动读取或修改 Magpie 的账号。
+
 ## 架构总览
 
 ```mermaid
