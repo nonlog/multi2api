@@ -14,12 +14,14 @@ import (
 
 const (
 	// defaultClientVersion 出站 WorkBuddy 客户端版本段（UA 的 `WorkBuddy/<ver>` 与
-	// 白名单头组的 X-IDE-Version）。对齐官方 WorkBuddy Desktop 分发包版本（5.5.4）。
+	// 白名单头组的 X-IDE-Version）。默认采用可核验的较新桌面客户端
+	// 5.9.2 版本组合；5.9.3 已发布但其内置 CLI/出站头尚未独立验证。
 	// config upstream.client_version 可覆盖（空 = 内置默认）。
-	defaultClientVersion = "5.5.4"
-	// defaultCliVersion 出站 UA 中 `CLI/<ver>` 段版本。对齐官方内置 CLI（2.137.1）。
+	defaultClientVersion = "5.9.2"
+	// defaultCliVersion 出站 UA 中 `CLI/<ver>` 段版本。5.9.2 的内置
+	// CLI/2.165.0 有社区解包记录，勿把桌面端版本误填到 CLI 段。
 	// config upstream.cli_version 可覆盖（空 = 内置默认）。
-	defaultCliVersion = "2.137.1"
+	defaultCliVersion = "2.165.0"
 
 	originRefererCN     = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
@@ -54,14 +56,13 @@ func (c *Client) cliVersion() string {
 // defaultWorkBuddyUAFor 组装默认客户端出站 UA（官方桌面端 RestOperations 层形状）：
 // `WorkBuddy/<clientVersion> <platform>/<clientVersion> CLI/<cliVersion>`。
 // 平台段（第二段）品牌按 realm 切换——CN 用 applicationName 同值 `WorkBuddy`，
-// global 用官方国际版 productName `WorkBuddy AI`（intl 项目逆向证据：
-// `WorkBuddy/5.5.2 WorkBuddy AI/5.5.2 CLI/5.5.2`）。
-// global 账号送错平台段（`WorkBuddy` 非 `WorkBuddy AI`）可能触发上游 403 code 11140
-// "request illegal" 风控。官方无任何 UA 随机化，故默认确定性。
+// global 实际桌面客户端的 applicationName 是小写 `workbuddy-ai`
+// （5.8.4 真实客户端抓包：`WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0`）。
+// 保持确定性，拒绝每请求随机改头；仅更新已经有明确依据的版本/品牌字段。
 func (c *Client) defaultWorkBuddyUAFor(a *auth.Auth) string {
 	platform := "WorkBuddy"
 	if a != nil && a.IsGlobal() {
-		platform = "WorkBuddy AI"
+		platform = "workbuddy-ai"
 	}
 	return "WorkBuddy/" + c.clientVersion() + " " + platform + "/" + c.clientVersion() + " CLI/" + c.cliVersion()
 }
@@ -274,9 +275,15 @@ func (c *Client) injectConversationHeaders(req *http.Request, meta ChatMeta) {
 		convReqID = session.NewMessageID()
 	}
 	messageID := session.NewMessageID()
-	if meta.ConversationID != "" {
-		req.Header.Set("X-Conversation-ID", meta.ConversationID)
+	// 会话头三元组必须齐全：国际端点收紧通道校验后，缺 X-Conversation-ID 的
+	// 请求会直接 400 / 11128（conversation id missing）。入站没带会话 ID 时
+	// 本级补一个 32 hex（与 X-Conversation-Request-ID 的零值兜底同口径），
+	// 不再因为「透传优先」而漏发该头（issue #190）。
+	conversationID := meta.ConversationID
+	if conversationID == "" {
+		conversationID = session.NewMessageID()
 	}
+	req.Header.Set("X-Conversation-ID", conversationID)
 	req.Header.Set("X-Conversation-Request-ID", convReqID)
 	req.Header.Set("X-Conversation-Message-ID", messageID)
 	req.Header.Set("X-Request-ID", messageID)

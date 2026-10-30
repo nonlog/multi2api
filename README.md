@@ -179,7 +179,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | 上游改动 | 吸收内容 |
 |---|---|
 | 净化增强 | `tool_calls.arguments` 盲区修复（content=null 的工具调用轮此前完全漏净化）、裸 `11128` 反探测改写、桌面版身份句（逗号形态）漏网修复、反馈句整句改写 |
-| 出站头族 | UA 对齐官方三段式 `WorkBuddy/<ver> WorkBuddy/<ver> CLI/<ver>`（默认 5.5.4/2.137.1，可配）；`X-IDE-*` 用量归属四头 + `X-Agent-Purpose`（`client_name` 配 `WorkBuddy` 即对齐官方桌面端）；`X-Device-Token` 设备风控头（auth 每号 / config / 文件三源）；`X-IDE-Version` 补齐 |
+| 出站头族 | UA 使用三段式 `WorkBuddy/<ver> <platform>/<ver> CLI/<cliVer>`；客户端版本基线已从 5.5.4/2.137.1 更新到有公开核验依据的 **5.9.2/2.165.0**（可配置覆盖），CN 平台段 `WorkBuddy`、global 平台段 `workbuddy-ai`；`X-IDE-*`、`X-Agent-Purpose` 和可选的 `X-Device-Token` 沿用已有配置。 |
 | 并发修复 | 客户端 IP 改按请求参数传递（消除共享字段竞态）；billing 单段 UA 形态 |
 | 签到幂等 | `IsAlreadyCheckin` 识别"今天已签到"（code=10001/14001），调度日志不再把重复签到当失败 |
 | 粘性按模型判活 | 会话绑定的账号被 6004 模型级限额后，换模型请求自动解绑重分配（治"限额后换不动号"）；`/healthz` 探活计入模型豁免形态（治"全号被单模型限流探活误报 503"） |
@@ -188,6 +188,16 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 未吸收（明确不做）：脚本体系（task_runner/school 脚本—我们已有更完整的纯 API 实现）、governance/CI workflow、成本账本选号（依赖 usage.credit 观测，收益待验证）。
 
 > 上游仓库此后已删除，上述第二轮（`ea8b1e5`）即其**删库前的最后一次更新**，本分支已完整吸收。此后本仓库与上游不再有同步关系，演进以本仓库为准。
+
+### WorkBuddy 客户端与账号保护兼容修复
+
+- **会话头必填**：所有 chat 出站请求都会带齐 `X-Conversation-ID` / `X-Conversation-Request-ID` / `X-Conversation-Message-ID`。已有 `Conversation-ID` 优先透传，否则生成新的 32 位十六进制 ID，避免缺头触发 WorkBuddy `11-128` 通道拒绝（上游 PR #233、issue #190/#197）。
+- **正确区分账号限制**：`11-128` + `request illegal` 是请求渠道校验失败，**不禁用、不冷却账号，也不会轮流使用整个账号池重试**；原始错误以 `channel_refused` 返回客户端。只有业务码 **11140** 且明确包含 `request illegal` 才按账号限制处理。其他 `11140` 模型级限流仍走限流分支。
+- **会话刷新安全**：并发刷新同一账号共用一次操作（single-flight），跨进程磁盘凭据轮换时可在发现真实新 refresh token 后采纳并重试一次，减少双重消费旧 token 导致 `12153`；网关聊天/刷新遇到 `12153` 与调度器统一采用连续 3 次才禁用，刷新成功清计数。
+- **版本依据与边界**：WorkBuddy 官网已有 5.9.3，但尚未取得它的真实 HTTP 请求头/内置 CLI 版本。此处只使用已经有公开拆包记录的 **5.9.2 / CLI 2.165.0** 作为默认版本组合，保持 `upstream.client_version`、`upstream.cli_version`、`upstream.user_agent` 显式覆盖的优先级；**不要仅把 UA 字符串伪装成 5.9.3**。这属于协议兼容，无法保证绕过平台风控或避免封禁。
+- **设备凭据**：有真实、授权取得的设备 token 才发送 `X-Device-Token`；不自动生成虚构 token。历史已经因 `12153` 禁用的账号不在部署时自动复活，以免使用无效凭据反复触发上游拒绝；确认凭据有效后可通过官方重新登录或面板手动解冻。
+
+上游对应修复：`7a8b7a7` + `d809396`（通道错误码字面量实际带连字符）以及 `3c4eb88`（refresh single-flight）。这些改动只用于当前 fork，并没有修改上游项目。已有原生 Responses、Anthropic Messages、联网搜索及自定义工具桥接保持不变。
 
 ## 架构总览
 

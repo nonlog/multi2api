@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -37,6 +38,7 @@ const (
 	ErrContentBlocked                // 内容策略拦截（400 + 审核文案）→ 不罚账号，走降级重试
 	ErrBadParams                     // 请求体解析失败（400 + Unmarshal chat params failed / 11101）→ 请求级错误：不罚号、不轮转，末端 400 透传原文
 	ErrAccountFault                  // 账号级授权/配额故障（11140 request illegal / 14017 trial not activated）→ 冷却轮换，不无限重试
+	ErrChannelRefused                // 11128 request illegal 通道校验失败（上游认为请求不是官方客户端发的）→ 不罚账号
 	ErrModelBlocked                  // 11102「该后端无此模型」→ (账号,模型) 负缓存避让，切模型/切账号
 	ErrWafBlock                      // 403 + 非业务信封体（APISIX WAF 拦截页/空体）→ 账号软冷却 + 抖动退避
 	ErrPromptTooLong                 // 11115「prompt is too long」→ 请求级错误（上下文超限是请求的问题非账号的问题）：不罚号、不轮转，末端透传原文
@@ -70,6 +72,8 @@ func (k ErrKind) String() string {
 		return "image_invalid"
 	case ErrAccountFault:
 		return "account_fault"
+	case ErrChannelRefused:
+		return "channel_refused"
 	case ErrClient:
 		return "client"
 	default:
@@ -126,19 +130,44 @@ var sessionDeadMarkers = []string{"Offline user session not found", "12153"}
 //
 // 定位：这类错误是**账号本身状态**决定的本机故障，不是请求格式、不是临时限流、
 // 也不是内容误报——继续重试只会反复刷上游风控/配额检查，必须把该账号冷却轮换。
-//   - "request illegal"（code 11140）→ 上游 auth/auth_forbidden，账号级授权风控，
-//     需重新 OAuth 登录才能恢复，短冷却只能阻止继续送死。
 //   - code 14017（"trial not activated" / "The trial version is not yet activated"）→
 //     上游 quota/quota_not_activated，register 未完成的试用未激活账号，同样账号级。
 //
-// 注意 11140 **不能**按 code 判定：该 code 也承载模型级限流文案（"The model provider
-// is rate-limiting requests."），那种场景必须保持 ErrSoftRate（下方 softRateMarkers
-// 后判定）。故此处只收 msg 关键词 "request illegal"（auth_forbidden 的真实文案）。
-// 14017 文案唯一（无软限流歧义），可安全收录。
+// 注意 **"request illegal" 不能作为通用 marker**：WorkBuddy 的 11128 通道校验失败
+// （`{"code":"11-128","msg":"request illegal"}`，displayTips 明确说「可能不是官方客户端
+// 发送」）与 11140 账号限制（`{"code":11140,"msg":"request illegal"}`）文案完全相同。
+// 只看文案会把一次通道校验失败误判成账号封禁并硬禁用健康账号。11140 的判定统一走
+// IsAccountRestricted（code + 文案双条件），不放进本词表。
+// 另：11140 **不能**按 code 单独判定——该 code 也承载模型级限流文案（"The model
+// provider is rate-limiting requests."），那种场景必须保持 ErrSoftRate（下方
+// softRateMarkers 后判定）。
 var accountFaultMarkers = []string{
-	"request illegal",
 	"trial not activated",
 	"trial version is not yet activated",
+}
+
+// accountRestrictedMsg 是 WorkBuddy 11140 账号限制的正文关键词。
+const accountRestrictedMsg = "request illegal"
+
+// IsAccountRestricted 报告上游 body 是否为 WorkBuddy 的账号级限制（11140
+// "request illegal"）。必须 code + 文案双条件：
+//   - 只看文案："request illegal" 也出现在 11128 通道校验失败里（健康账号）；
+//   - 只看 code：11140 也承载模型级限流文案（应归 ErrSoftRate）。
+func IsAccountRestricted(body string) bool {
+	if !strings.Contains(strings.ToLower(body), accountRestrictedMsg) {
+		return false
+	}
+	return hasBusinessCode(body, "11140")
+}
+
+// isChannelRefused 报告上游 body 是否为 WorkBuddy 的通道校验失败（11128
+// "request illegal"）。11128 还承载内容审核变体（"blocked by security policy"，
+// 归 ErrContentBlocked），故必须 code + 文案双条件，不能按 code 一刀切。
+func isChannelRefused(body string) bool {
+	if !strings.Contains(strings.ToLower(body), accountRestrictedMsg) {
+		return false
+	}
+	return hasBusinessCode(body, "11-128")
 }
 
 // contentBlockedMarkers 内容策略拦截关键词（大小写不敏感子串匹配）。
@@ -467,8 +496,10 @@ func ParseRateReset(body string) (time.Time, bool) {
 //     14017 trial not activated register 未完成）。必须先于 status==429 判定：
 //     14017 常带 429 状态码，若落到 status==429 会误归 soft_rate（"限流"语义不符：
 //     限流可指数退避等自愈，账号级故障等不来）。11140 的 model 级限流变体
-//     （rate-limiting 文案）因 marker 不含该文案而天然落到 softRateMarkers 层，
-//     不受影响。
+//     （rate-limiting 文案）因 IsAccountRestricted 要求 "request illegal" 文案
+//     而不命中，天然落到 softRateMarkers 层，不受影响。
+//     同一层先按业务码分流 11128 通道校验失败（文案同为 "request illegal"）：
+//     那是客户端指纹/通道问题，账号本身健康，归 ErrChannelRefused 不罚号。
 //  4. 429 + code 14018 —— 明确的账号积分耗尽，归 ErrHardCredit（issue #175）。
 //     只认结构化业务码，不靠可能跨计费/限流两界的文案猜测。
 //  5. status==429 —— 限流状态码兜底（先于 hardMarkers）：429 body 高频携带
@@ -506,6 +537,18 @@ func Classify(status int, body string) ErrKind {
 		if strings.Contains(body, m) {
 			return ErrSessionDead
 		}
+	}
+	// WorkBuddy 11128 / 11140 的 msg 同为 "request illegal"，必须按业务码分流：
+	//   - 11128 = 通道校验失败（displayTips: 可能不是官方客户端发送）→ 账号健康，
+	//     不罚号。误判成 account_fault 会硬禁用正常账号（issue 1849 同款误伤）。
+	//   - 11140 = 账号被上游限制（异常行为/风控）→ account_fault，由 handler 禁用。
+	// 两者都要求 code + 文案双条件，避免 11140 的模型级限流变体被误判（见
+	// IsAccountRestricted 注释）。
+	if isChannelRefused(body) {
+		return ErrChannelRefused
+	}
+	if IsAccountRestricted(body) {
+		return ErrAccountFault
 	}
 	for _, m := range accountFaultMarkers {
 		if strings.Contains(lower, strings.ToLower(m)) || strings.Contains(body, m) {
@@ -645,10 +688,10 @@ type Client struct {
 	UserAgent string
 
 	// ClientVersion WorkBuddy 客户端版本段（出站 UA 的 `WorkBuddy/<ver>` + X-IDE-Version）。
-	// 空 = 内置默认（对齐官方 5.5.4 分发包）。
+	// 空 = 内置默认（5.9.2，当前可核验版本；未来可按官方更新覆盖）。
 	ClientVersion string
 
-	// CliVersion 出站 UA 中 `CLI/<ver>` 段版本。空 = 内置默认（官方内置 CLI 2.137.1）。
+	// CliVersion 出站 UA 中 `CLI/<ver>` 段版本。空 = 内置默认（5.9.2 内置 CLI 2.165.0）。
 	CliVersion string
 
 	// ClientName 用量归属头取值（X-Product / X-IDE-Name / X-IDE-Type / X-IDE-Version）。
@@ -681,6 +724,13 @@ type Client struct {
 	// false 时即便用户 auth 写了 realm=global 也**不**路由到 global base——
 	// chatBase/billingBase 返回 CN base，路径也走 CN（双保险，与 auth.Realm() 的开关闸呼应）。
 	GlobalEnabled bool
+
+	// refreshMu/refreshInFlight 同账号 refresh 单飞（按 UID 分桶）：同一时刻只允许
+	// 一个 refresh 在途，其余调用等待并复用首个结果。上游对 refreshToken 反重放，
+	// 并发第二发会带着已被消费的 RT 撞 12153 并整链作废（issue #215：账号从此恒
+	// 401，只能人工重登）。单飞在这里是保号手段，不只是省流量。
+	refreshMu       sync.Mutex
+	refreshInFlight map[string]*refreshFlight
 }
 
 // New 生产默认值。Transport 由 newTransport() 集中构造（连接层加固：真正禁 h2 /
@@ -901,13 +951,92 @@ const refreshTokenExpiresInMax = 10 * 365 * 24 * time.Hour
 // RefreshToken 刷新 access token；成功时更新 a 的字段（缺省值保留旧值），
 // 调用方负责 SaveAtomic。
 //
-// 并发安全模型（两段式，缩小持锁窗口）：
-//   - 锁内仅做「读 refreshToken 快照」与「校验未变后写回新 token」两小段内存操作；
-//   - 网络 I/O（doJSON）在**锁外**执行，带 30s ctx 超时——避免上游 hang 时长时间
-//     独占 a.mu，阻塞同账号的 SaveAtomic / 其他刷新（issue:持锁 120s I/O）。
-//   - 写回前重新校验快照一致性：若锁外期间另一 goroutine 已完成刷新（refreshToken
-//     已变），本次结果直接采用（新 token 已生效），不再重复写回。
+// 并发安全模型（单飞 + 两段式）：
+//   - **单飞**：同一账号（UID）同一时刻只允许一个 refresh 在途，其余调用等待并
+//     原样复用首个结果。上游对 refreshToken 有反重放：RT 被消费后再用会撞 12153
+//     （refresh token is invalid）并把整条 RT 链作废，账号从此恒 401、只能人工
+//     重新登录（issue #215：scheduler keepalive / handler 临近过期刷新 / signin
+//     会并发触发同一账号）。所以单飞在这里是保号手段，而不只是省流量。
+//   - 首个调用内部仍是两段式：锁内读快照 → 锁外 I/O（30s）→ 锁内校验快照一致后
+//     写回；写回前若发现另一刷新已完成（两 token 同时变化）则直接采用。
+//   - 12153 兜底：若磁盘 auth 文件已被其他进程（server + signin 双进程部署）刷新
+//     过，则采纳磁盘 token 重试一次——进程内单飞挡不住跨进程竞态。
 func (c *Client) RefreshToken(a *auth.Auth) error {
+	key := a.UID
+	if key == "" {
+		// 无 UID 的临时 auth：退化为按对象指针去重，仍保证同一对象串行。
+		key = fmt.Sprintf("%p", a)
+	}
+	c.refreshMu.Lock()
+	if c.refreshInFlight == nil {
+		c.refreshInFlight = make(map[string]*refreshFlight)
+	}
+	if f, ok := c.refreshInFlight[key]; ok {
+		c.refreshMu.Unlock()
+		<-f.done
+		return f.err
+	}
+	f := &refreshFlight{done: make(chan struct{})}
+	c.refreshInFlight[key] = f
+	c.refreshMu.Unlock()
+
+	err := c.refreshTokenOnce(a)
+	if err != nil && isSessionDead(err) && adoptNewerTokensFromDisk(a) {
+		// 跨进程竞态：磁盘 RT 已被别的进程 rotate 过，用新 RT 再试一次。
+		err = c.refreshTokenOnce(a)
+	}
+
+	// 先写结果再关 channel：等待者 <-f.done 之后读到的一定是最终 err。
+	f.err = err
+	close(f.done)
+	c.refreshMu.Lock()
+	delete(c.refreshInFlight, key)
+	c.refreshMu.Unlock()
+	return err
+}
+
+// refreshFlight 是同一账号一次 refresh 的单飞票据：done 关闭即结果就绪。
+type refreshFlight struct {
+	done chan struct{}
+	err  error
+}
+
+// isSessionDead 判定错误是否为上游 12153（会话 / RT 失效）。
+func isSessionDead(err error) bool {
+	var ue *Error
+	return errors.As(err, &ue) && ue.Kind == ErrSessionDead
+}
+
+// adoptNewerTokensFromDisk 在 refresh 失败后读回 auth 文件：若磁盘 RT 与内存不同
+// （另一进程已刷新并写回），采纳磁盘 token 并返回 true，供调用方重试一次。
+// 读文件失败、解析失败、RT 一致均返回 false（不改内存状态），保持失败语义。
+func adoptNewerTokensFromDisk(a *auth.Auth) bool {
+	if a.FilePath == "" {
+		return false
+	}
+	raw, err := os.ReadFile(a.FilePath)
+	if err != nil {
+		return false
+	}
+	disk, err := auth.Parse(raw)
+	if err != nil || strings.TrimSpace(disk.RefreshToken) == "" {
+		return false
+	}
+	a.Lock()
+	defer a.Unlock()
+	if disk.RefreshToken == a.RefreshToken {
+		return false
+	}
+	a.AccessToken = disk.AccessToken
+	a.RefreshToken = disk.RefreshToken
+	if disk.ExpiresAt > 0 {
+		a.ExpiresAt = disk.ExpiresAt
+	}
+	return true
+}
+
+// refreshTokenOnce 是单次刷新本体（调用方 RefreshToken 已保证同账号串行）。
+func (c *Client) refreshTokenOnce(a *auth.Auth) error {
 	// 第 1 段（锁内）：读快照。
 	a.Lock()
 	rtSnapshot := a.RefreshToken

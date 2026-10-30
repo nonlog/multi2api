@@ -803,7 +803,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				lastErr = err
 				var ue *upstream.Error
 				if errors.As(err, &ue) && ue.Kind == upstream.ErrSessionDead {
-					h.cfg.Pool.Disable(acct.UID, "refresh session dead")
+					// A single transient 12153 must not permanently discard the
+					// account. Share the three-strike state machine used by the
+					// scheduler (which also persists the consecutive failure count).
+					h.cfg.Pool.NoteSessionDead(acct.UID)
 				} else {
 					h.cfg.Pool.NoteError(acct.UID)
 				}
@@ -817,6 +820,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 刷新成功但落盘失败：下次启动会用旧 token，必须暴露
 				log.Printf("ERR: [server] chat refresh acct=%s: save auth failed: %v", logfmt.Label(acct.UID, acct.Nickname), err)
 			}
+			h.cfg.Pool.ClearSessionDead(acct.UID)
 		}
 
 		// 客户端 IP 按请求传递（PassthroughIP 开启时注入；消除共享字段竞态）。
@@ -949,6 +953,24 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				}
 				writeOpenAIErrorHint(w, http.StatusBadRequest, "bad_params", msg,
 					h.hintOf(upstream.ErrBadParams, string(respBody), bareModel, reqHasImage, uerr))
+				st.status = http.StatusBadRequest
+				st.outcome = reqlog.OutcomeHTTPError
+				return
+			}
+			// 11-128 is a request-channel rejection, not an account ban.
+			// Retrying the same headers through every account just magnifies
+			// the same rejected request and adds unnecessary account risk.
+			// Return the actual upstream diagnostics without penalizing any
+			// account or disguising this as an unavailable model.
+			if kind == upstream.ErrChannelRefused {
+				h.applyErrorPolicy(acct.UID, kind, string(respBody), bareModel, uerr)
+				fail(acct.UID)
+				msg := string(respBody)
+				if strings.TrimSpace(msg) == "" {
+					msg = "upstream rejected request channel"
+				}
+				writeOpenAIErrorHint(w, http.StatusBadRequest, "channel_refused", msg,
+					h.hintOf(upstream.ErrChannelRefused, string(respBody), bareModel, reqHasImage, uerr))
 				st.status = http.StatusBadRequest
 				st.outcome = reqlog.OutcomeHTTPError
 				return
@@ -1390,22 +1412,30 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		}
 		h.cfg.Pool.CooldownSoftRate(uid, jitterDur(wafCooldownBase), time.Time{}, "waf 403 block")
 	case upstream.ErrSessionDead:
-		h.cfg.Pool.Disable(uid, "12153 session dead")
+		h.cfg.Pool.NoteSessionDead(uid)
 	case upstream.ErrNotFound:
 		// 404 短冷却（软冷却），防雪崩。固定 notFoundCooldown，不随 soft_rate 退避：
 		// 偶发路径缺失不是限流信号，不该按限流惩罚升级。
 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, notFoundCooldown, "upstream 404")
 	case upstream.ErrAccountFault:
-		// 账号级授权/配额故障按 msg 分野（口径与 Classify 的 accountFaultMarkers 一致）：
-		//   - "request illegal"（code 11140）→ 账号级**授权封禁**：硬禁用（Disable）。
+		// 账号级授权/配额故障按业务码分野（口径与 Classify 一致）：
+		//   - 11140 + "request illegal" → 账号被上游限制（异常行为/风控）：硬禁用。
+		//     解除只能由用户在 WorkBuddy 官方渠道申诉，重登无效（issue 1849 结论）。
 		//   - 14017（trial not activated）→ register 未完成，补完 register 后可能自愈，
 		//     **保持软冷却**（禁用会让用户补完 register 后仍无法用）。
-		// 大小写不敏感（与 Classify 的 marker 匹配同口径）。
-		if strings.Contains(strings.ToLower(body), "request illegal") {
-			h.cfg.Pool.Disable(uid, "account banned by upstream (11140 request illegal), re-login required")
+		// 注意 11128 的 msg 同为 "request illegal"，但那是通道校验失败，已在
+		// Classify 分流到 ErrChannelRefused，走不到这里。
+		if upstream.IsAccountRestricted(body) {
+			h.cfg.Pool.Disable(uid, "account restricted by upstream (11140 request illegal); appeal in WorkBuddy (submit feedback) to lift the restriction")
 			return
 		}
 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.softCooldown(), "account fault (14017)")
+	case upstream.ErrChannelRefused:
+		// 11128 通道校验失败（上游判定请求可能不是官方客户端发出，displayMsg 就是
+		// 「请求被拦截，请重新发送」）。账号本身健康——官方客户端可正常使用同一账号，
+		// 这不是账号级故障，**不罚账号**（无冷却/熔断/NoteFailures）。与
+		// ErrContentBlocked 同待遇，由轮转继续尝试（换号不改变通道指纹，若全池同错
+		// 会把上游原文透传给客户端，提示排查客户端指纹）。
 	case upstream.ErrServer:
 		// 5xx 上游故障：Classify 已把 ≥500 判为 ErrServer，在此喂熔断计数（不再手写 status>=500）。
 		h.cfg.Pool.NoteError(uid)
