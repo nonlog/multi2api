@@ -993,6 +993,7 @@ const CFG_MAP = {
   request_client_info: ['logging', 'request_client_info'],
   providers_enabled: ['providers', 'enabled'],
   providers_auth_file: ['providers', 'auth_file'],
+  model_aliases_json: ['model_mapping', 'aliases'],
 };
 /* 「覆盖型」文本字段：空串本身是有意义的取值（= 回落到内置默认），必须照发。
  *
@@ -1028,8 +1029,11 @@ async function loadConfig() {
       else if (Array.isArray(v)) el.value = v.join(', ');
       else el.value = v == null ? '' : v;
     }
-    $('cfgModelAliases').value = JSON.stringify(dig(cfgLoaded, ['model_mapping', 'aliases']) || {}, null, 2);
-    $('cfgModelAliases').classList.remove('invalid');
+    const aliasInput = $('cfgModelAliases');
+    if (aliasInput) {
+      aliasInput.value = JSON.stringify(dig(cfgLoaded, ['model_mapping', 'aliases']) || {}, null, 2);
+      aliasInput.classList.remove('invalid');
+    }
     loadProviderStatus();
     markDurationFields(); // 回填后重置校验态（清掉残留红框；现值来自后端必然合法）
     $('cfgNote').textContent = '';
@@ -1052,16 +1056,22 @@ function collectConfig() {
     }
     if (v !== undefined) put(out, path, v);
   }
-  let aliases;
-  try {
-    aliases = JSON.parse($('cfgModelAliases').value.trim() || '{}');
-    if (!aliases || typeof aliases !== 'object' || Array.isArray(aliases)) throw new Error('格式必须是 JSON 对象');
-  } catch (e) {
-    $('cfgModelAliases').classList.add('invalid');
-    throw new Error('模型映射 JSON 无效：' + e.message);
+  // Older embedded test harnesses and panel extensions may not include the
+  // optional model editor. Do not clear existing mappings in that case.
+  const aliasInput = $('cfgModelAliases');
+  if (aliasInput) {
+    let aliases;
+    try {
+      aliases = JSON.parse(aliasInput.value.trim() || '{}');
+      if (!aliases || typeof aliases !== 'object' || Array.isArray(aliases))
+        throw new Error('格式必须是 JSON 对象');
+    } catch (e) {
+      aliasInput.classList.add('invalid');
+      throw new Error('模型映射 JSON 无效：' + e.message);
+    }
+    aliasInput.classList.remove('invalid');
+    put(out, ['model_mapping', 'aliases'], aliases);
   }
-  $('cfgModelAliases').classList.remove('invalid');
-  put(out, ['model_mapping', 'aliases'], aliases);
   return out;
 }
 
@@ -1090,7 +1100,7 @@ async function loadProviderStatus() {
     el.textContent = '无法获取内置 Provider 状态：' + e.message;
   }
 }
-$('btnProviderStatus').onclick = loadProviderStatus;
+if ($('btnProviderStatus')) $('btnProviderStatus').onclick = loadProviderStatus;
 /* Go 时长字段即时校验：空 = 沿用现值（collectConfig 跳过发送）；非空必须是
    ParseDuration 语法（30m / 2h / 600s / 1h30m，可组合可带小数）。与后端
    config.go normalize() 的 time.ParseDuration 同口径，脏值在前端就地标红，
