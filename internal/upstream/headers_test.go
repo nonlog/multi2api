@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/nonlog/multi2api/internal/auth"
 )
 
 // TestChatHeadersAlwaysSendConversationTrio 回归 issue #190：国际端点收紧通道

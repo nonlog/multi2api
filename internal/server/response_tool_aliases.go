@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/nonlog/multi2api/internal/upstream"
 )
 
 // responsesNamespaceContextKey carries only the current request's declared

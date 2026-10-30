@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/nonlog/multi2api/internal/upstream"
 )
 
 const nativeSearchFunction = "_wb2api_web_search"

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/reqlog"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
+	"github.com/nonlog/multi2api/internal/pool"
+	"github.com/nonlog/multi2api/internal/reqlog"
+	"github.com/nonlog/multi2api/internal/usage"
 )
 
 // parseTimeParam 是「今天 / 自定义」区间的唯一入口：前端默认发 unix 秒，手工

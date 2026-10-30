@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/responses"
+	"github.com/nonlog/multi2api/internal/responses"
 )
 
 // guideCodexDeepSeekToolNames addresses a recurring native-tool issue in

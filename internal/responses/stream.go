@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/nonlog/multi2api/internal/upstream"
 )
 
 // ErrEmptyStream 上游返回 200 但没有任何有效帧。

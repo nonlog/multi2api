@@ -10,7 +10,7 @@ import (
 	"net/http/httptest"
 	"sync"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/responses"
+	"github.com/nonlog/multi2api/internal/responses"
 )
 
 // responses is a native Responses API entry point. Inbound requests are converted

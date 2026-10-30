@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/nonlog/multi2api/internal/auth"
 )
 
 // TestResponsesEndpointNonStream 覆盖 /v1/responses 非流式全链路：

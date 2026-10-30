@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/nonlog/multi2api/internal/upstream"
 )
 
 // Codex emits lifecycle developer messages between a function_call item

@@ -17,18 +17,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/panel"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/providerhost"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/redisstore"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/reqlog"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/scheduler"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/server"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
+	"github.com/nonlog/multi2api/internal/auth"
+	"github.com/nonlog/multi2api/internal/livecfg"
+	"github.com/nonlog/multi2api/internal/panel"
+	"github.com/nonlog/multi2api/internal/pool"
+	"github.com/nonlog/multi2api/internal/providerhost"
+	"github.com/nonlog/multi2api/internal/redisstore"
+	"github.com/nonlog/multi2api/internal/reqlog"
+	"github.com/nonlog/multi2api/internal/scheduler"
+	"github.com/nonlog/multi2api/internal/server"
+	"github.com/nonlog/multi2api/internal/session"
+	"github.com/nonlog/multi2api/internal/upstream"
+	"github.com/nonlog/multi2api/internal/usage"
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
@@ -365,7 +365,7 @@ func main() {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("workbuddy2api listening on %s (api_key=%v)，管理面板 http://127.0.0.1%s/panel/", cfg.Listen, cfg.APIKey != "", panelListenPath(cfg.Listen))
+	log.Printf("Multi2API listening on %s (api_key=%v)，管理面板 http://127.0.0.1%s/panel/", cfg.Listen, cfg.APIKey != "", panelListenPath(cfg.Listen))
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("http: %v", err)
 	}

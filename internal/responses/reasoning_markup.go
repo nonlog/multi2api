@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/nonlog/multi2api/internal/upstream"
 )
 
 // ErrReasoningToolMarkup is returned when an otherwise successful Chat

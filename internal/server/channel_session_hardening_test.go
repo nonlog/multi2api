@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/nonlog/multi2api/internal/auth"
+	"github.com/nonlog/multi2api/internal/pool"
+	"github.com/nonlog/multi2api/internal/upstream"
 )
 
 // A 11-128 channel rejection is an invalid request channel, not an account

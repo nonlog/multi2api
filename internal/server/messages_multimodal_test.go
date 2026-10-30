@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/nonlog/multi2api/internal/auth"
+	"github.com/nonlog/multi2api/internal/upstream"
 )
 
 // Real Pi 2026-10-18 incident: read returned a text block followed by

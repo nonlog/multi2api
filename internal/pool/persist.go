@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/nonlog/multi2api/internal/auth"
 )
 
 var flushInterval = 5 * time.Second

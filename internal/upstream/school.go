@@ -17,7 +17,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/nonlog/multi2api/internal/auth"
 )
 
 const schoolBase = "/portal/activity/school"

@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/redisstore"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
+	"github.com/nonlog/multi2api/internal/auth"
+	"github.com/nonlog/multi2api/internal/pool"
+	"github.com/nonlog/multi2api/internal/prompt"
+	"github.com/nonlog/multi2api/internal/redisstore"
+	"github.com/nonlog/multi2api/internal/session"
+	"github.com/nonlog/multi2api/internal/upstream"
+	"github.com/nonlog/multi2api/internal/usage"
 )
 
 // TestMain 默认关闭聊天表格日志（chatLogEnabled=false），消除 go test 期间的 stdout 噪音。

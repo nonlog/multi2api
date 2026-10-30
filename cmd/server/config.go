@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/server"
+	"github.com/nonlog/multi2api/internal/prompt"
+	"github.com/nonlog/multi2api/internal/server"
 )
 
 // Config 顶层配置。
