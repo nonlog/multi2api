@@ -36,7 +36,15 @@ func TestChatChannelRefusedStopsAtOneAccountAndDoesNotDisable(t *testing.T) {
 			}
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(payload)))
-			if rec.Code != 400 || !strings.Contains(rec.Body.String(), "channel_refused") ||
+			wantType := "channel_refused"
+			if path == "/v1/messages" {
+				// Native Anthropic Messages uses its standard
+				// invalid_request_error envelope; preserve the original
+				// 11-128 explanation in the message instead of inventing
+				// an incompatible Anthropic error type.
+				wantType = "invalid_request_error"
+			}
+			if rec.Code != 400 || !strings.Contains(rec.Body.String(), wantType) ||
 				!strings.Contains(rec.Body.String(), "11-128") {
 				t.Fatalf("path=%s status=%d body=%s", path, rec.Code, rec.Body)
 			}
