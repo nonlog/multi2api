@@ -166,13 +166,20 @@ async function handleUsage(url) {
   const requested = url.searchParams.get("provider")
   const ids = requested ? [requested] : Object.keys(PROVIDERS)
   if (ids.some(id => !PROVIDERS[id])) return responses(400, { error: "unknown provider" })
-  const result = []
-  for (const id of ids) {
-    for (const key of providerKeys(id)) {
+  const accounts = ids.flatMap(id => providerKeys(id).map(key => ({ id, key })))
+  const result = new Array(accounts.length)
+  // A serial usage scan across ten accounts can exceed the Go gateway's
+  // upstream deadline (especially during OAuth refresh). Limit concurrency
+  // instead of firing a large burst at every vendor simultaneously.
+  let cursor = 0
+  const readOne = async () => {
+    while (cursor < accounts.length) {
+      const index = cursor++
+      const { id, key } = accounts[index]
       const cacheKey = id + "\0" + key
       const cached = usageCache.get(cacheKey)
       if (cached && Date.now() - cached.at < 180_000) {
-        result.push({ provider: id, account: key, ...cached.value, cached: true })
+        result[index] = { provider: id, account: key, ...cached.value, cached: true }
         continue
       }
       let value
@@ -188,9 +195,10 @@ async function handleUsage(url) {
         }
       } catch { value = { error: "provider usage request failed", windows: [] } }
       usageCache.set(cacheKey, { value, at: Date.now() })
-      result.push({ provider: id, account: key, ...value })
+      result[index] = { provider: id, account: key, ...value }
     }
   }
+  await Promise.all(Array.from({ length: Math.min(4, accounts.length) }, readOne))
   return responses(200, { data: result })
 }
 
