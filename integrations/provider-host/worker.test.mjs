@@ -48,6 +48,38 @@ test("all real bundled plugins initialize behind the same private Unix socket", 
     })
     expect(claim.status).toBe(200)
     expect((await claim.json()).data).toEqual([])
+
+    const accountsBefore = await fetch("http://localhost/admin/accounts", { unix: socket })
+    expect((await accountsBefore.json()).data).toEqual([])
+    const methods = await fetch("http://localhost/admin/methods?provider=qoder", { unix: socket })
+    expect(methods.status).toBe(200)
+    expect((await methods.json()).methods.length).toBeGreaterThan(0)
+    const codearts = await fetch("http://localhost/admin/methods?provider=codearts", { unix: socket })
+    expect((await codearts.json()).supported).toBe(false)
+    const invalidMethod = await fetch("http://localhost/admin/methods?provider=garbage", { unix: socket })
+    expect(invalidMethod.status).toBe(400)
+
+    const secret = "never-return-this-access-token"
+    const perform = (path, body) => fetch("http://localhost/admin/" + path, {
+      unix: socket, method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    const imported = await perform("import", {
+      provider: "qoder", credential: { type: "oauth", access: secret, uid: "test-user", accountId: "sample@example.test" },
+    })
+    expect(imported.status).toBe(200)
+    const { account } = await imported.json()
+    const listed = await fetch("http://localhost/admin/accounts", { unix: socket })
+    const raw = await listed.text()
+    expect(raw.includes(secret)).toBe(false)
+    expect(JSON.parse(raw).data).toHaveLength(1)
+    expect((await perform("account/action", {provider:"qoder",account,action:"disable"})).status).toBe(200)
+    const listing = await fetch("http://localhost/admin/accounts", { unix: socket })
+    expect((await listing.json()).data[0].disabled).toBe(true)
+    expect((await perform("account/action", {provider:"qoder",account,action:"enable"})).status).toBe(200)
+    expect((await perform("account/action", {provider:"qoder",account,action:"remove"})).status).toBe(200)
+    const removed = await fetch("http://localhost/admin/accounts", { unix: socket })
+    expect((await removed.json()).data).toHaveLength(0)
   } finally {
     server?.stop(true)
     await rm(dir, { recursive: true, force: true })

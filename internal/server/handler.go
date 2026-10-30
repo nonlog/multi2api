@@ -65,7 +65,8 @@ type Config struct {
 
 	// ModelAliases provides downstream-id -> []realm-qualified upstream ids.
 	// When both cn and global are configured, normal pool selection spans both.
-	ModelAliases map[string][]string
+	ModelAliases    map[string][]string
+	ProviderAliases map[string]string
 
 	// Optional built-in ZCode, Qoder, QwenWork and CodeArts plugins.
 	ProviderHost *providerhost.Host
@@ -523,6 +524,7 @@ func (h *Handler) modelList() []map[string]any {
 	if h.cfg.ProviderHost != nil {
 		out = append(out, h.cfg.ProviderHost.Models(context.Background())...)
 	}
+	out = mapProviderAliases(out, h.cfg.ProviderAliases)
 	return out
 }
 
@@ -619,7 +621,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		Model  string `json:"model"`
 	}
 	_ = json.Unmarshal(body, &peek)
-	if provider, bare, ok := providerhost.ModelProvider(peek.Model); ok {
+	selected := peek.Model
+	if target := h.cfg.ProviderAliases[selected]; target != "" {
+		selected = target
+	}
+	if provider, bare, ok := providerhost.ModelProvider(selected); ok {
 		if h.cfg.ProviderHost == nil {
 			writeOpenAIError(w, http.StatusServiceUnavailable, "provider_disabled",
 				"integrated provider is not enabled: "+provider)

@@ -9,6 +9,8 @@ let refTimer = null;
 /* 视图级筛选状态（模块级声明放在文件顶部，避免顶层 go() 早于声明执行时踩 TDZ）。 */
 let mdFilter = { q: '', realm: '', cap: '', effort: '', promo: '', sort: 'default' };
 let mdAll = [], mdProbes = {}, mdProbeOf = () => undefined;
+let pvAccounts = [], pvQuotas = new Map(), pvLoginProvider = '', pvMethods = [];
+let modelAliasWB = {}, modelAliasProvider = {};
 let reqFilter = { q: '', outcome: '' };
 let reqEntries = [];
 let usDim = 'account', usCreditDim = 'account', usSort = 'total';
@@ -344,7 +346,11 @@ function go(v) {
   document.querySelectorAll('.view').forEach(s => s.hidden = s.id !== 'view-' + v);
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('on', a.dataset.view === v));
   $('ttl').textContent = TITLES[v];
-  if (v === 'models' && !$('mdBody').children.length) loadModels();
+  if (v === 'models') {
+    if (!$('mdBody').children.length) loadModels();
+    loadAliasConfig();
+  }
+  if (v === 'accounts') loadProviderAccounts();
   if (v === 'config') loadConfig();
   if (v === 'logs') loadLogs();
   if (v === 'usage') loadUsage();
@@ -367,6 +373,100 @@ setTimeout(() => {
 }, 0);
 
 /* ── 账号池 ───────────────────────────────────────────────────────── */
+const PV_NAMES = { zcode:'ZCode', qoder:'Qoder 国际', 'qoder-cn':'Qoder 国内',
+  qwenwork:'千问办公', 'qwenwork-enterprise':'千问企业', codearts:'华为 CodeArts' };
+const PV_OUTCOME = { claimed:'已领取', done:'已完成', failed:'失败', not_run:'尚未签到',
+  unsupported:'不支持', ineligible:'条件不足', busy:'进行中', skipped:'已跳过' };
+function renderProviderAccounts() {
+  const sum = $('providerSummary'), body = $('providerAccountBody');
+  if (!sum || !body) return;
+  sum.innerHTML = Object.entries(PV_NAMES).map(([id, name]) => {
+    const list = pvAccounts.filter(a => a.provider === id);
+    return '<div class="p-sum"><strong>' + list.length + '</strong><span>' + esc(name) + '</span></div>';
+  }).join('');
+  if (!pvAccounts.length) {
+    body.innerHTML = '<tr><td colspan="6"><div class="empty">暂无平台账号。点击「添加平台账号」，选择 ZCode、Qoder、千问办公或 CodeArts。</div></td></tr>';
+    return;
+  }
+  body.innerHTML = pvAccounts.map(a => {
+    const quota = pvQuotas.get(a.account);
+    const state = a.disabled ? ['已禁用','bad'] : a.state === 'login_expired'
+      ? ['授权已过期','bad'] : ['凭据已导入','warn'];
+    const windows = (quota?.windows || []).map(w => w.display || w.name).filter(Boolean).join(' · ');
+    const balance = quota?.error ? '查询失败：' + quota.error :
+      quota ? [quota.plan, windows].filter(Boolean).join(' · ') || '无额度数据' : '尚未查询';
+    const checkin = a.checkin_supported ? (PV_OUTCOME[a.checkin] || a.checkin) : '不支持签到';
+    return '<tr><td><span class="tag">' + esc(PV_NAMES[a.provider] || a.provider) + '</span></td>' +
+      '<td class="who"><div class="nm" title="' + esc(a.label) + '">' + esc(a.label) + '</div>' +
+      '<div class="id">' + esc(a.account) + '</div></td>' +
+      '<td><span class="pa-status ' + state[1] + '">' + state[0] + '</span></td>' +
+      '<td>' + esc(checkin) + '</td>' +
+      '<td style="min-width:190px;max-width:380px"><div class="pa-note" title="' + esc(balance) + '">' + esc(balance) + '</div></td>' +
+      '<td class="c-acts"><div class="pa-actions">' +
+      '<button type="button" class="xs" data-pv-action="quota" data-pv-provider="' + esc(a.provider) + '" data-pv-account="' + esc(a.account) + '">额度</button>' +
+      (a.checkin_supported ? '<button type="button" class="xs" data-pv-action="checkin" data-pv-provider="' + esc(a.provider) + '" data-pv-account="' + esc(a.account) + '">签到</button>' : '') +
+      '<select class="xs" aria-label="账号管理" data-pv-provider="' + esc(a.provider) + '" data-pv-account="' + esc(a.account) + '">' +
+      '<option value="">管理…</option><option value="relogin">重新登录</option><option value="' + (a.disabled ? 'enable' : 'disable') + '">' + (a.disabled ? '启用' : '禁用') + '</option><option value="remove">移除</option></select>' +
+      '</div></td></tr>';
+  }).join('');
+}
+async function loadProviderAccounts() {
+  const body = $('providerAccountBody');
+  if (!body) return;
+  try {
+    const r = await api('providers/accounts');
+    pvAccounts = Array.isArray(r.data) ? r.data : [];
+    renderProviderAccounts();
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="6"><div class="empty">平台账号读取失败：' + esc(e.message) + '</div></td></tr>';
+  }
+}
+async function pvQuota(provider) {
+  const headers = providerAuthHeaders();
+  const res = await fetch('/v1/providers/usage?provider=' + encodeURIComponent(provider), { headers });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+  for (const a of data.data || []) pvQuotas.set(a.account, a);
+  renderProviderAccounts();
+}
+async function pvCheckin(provider, account) {
+  const res = await fetch('/v1/providers/checkin', {
+    method:'POST', headers:{ ...providerAuthHeaders(), 'Content-Type':'application/json' },
+    body: JSON.stringify({ provider, account }),
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  await loadProviderAccounts();
+}
+async function pvOperate(provider, account, action) {
+  if (action === 'relogin') { openAdd(provider); return; }
+  if (action === 'remove' && !confirm('确定从 Multi2API 移除此账号吗？不会删除 Magpie 中的原凭据。')) return;
+  await api('providers/account/action', { method:'POST', body:JSON.stringify({provider,account,action}) });
+  pvQuotas.delete(account);
+  await loadProviderAccounts();
+  toast(action === 'remove' ? '账号已移除' : '账号状态已更新', 'ok');
+}
+$('btnProviderAccounts').onclick = loadProviderAccounts;
+$('btnAddProvider').onclick = () => openAdd('zcode');
+$('providerAccountBody').addEventListener('click', async ev => {
+  const btn = ev.target.closest('button[data-pv-action]');
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    if (btn.dataset.pvAction === 'quota') await pvQuota(btn.dataset.pvProvider);
+    else if (btn.dataset.pvAction === 'checkin') await pvCheckin(btn.dataset.pvProvider, btn.dataset.pvAccount);
+  } catch (e) { toast('平台操作失败：' + e.message, 'err'); }
+  finally { btn.disabled = false; }
+});
+$('providerAccountBody').addEventListener('change', async ev => {
+  const sel = ev.target.closest('select[data-pv-account]');
+  if (!sel || !sel.value) return;
+  const action = sel.value; sel.value = '';
+  sel.disabled = true;
+  try { await pvOperate(sel.dataset.pvProvider, sel.dataset.pvAccount, action); }
+  catch (e) { toast('账号操作失败：' + e.message, 'err'); }
+  finally { sel.disabled = false; }
+});
+
 function renderAccounts(list) {
   const tb = $('accBody');
   if (!list.length) {
@@ -643,12 +743,102 @@ async function loadModels() {
     const hit = mdAll.filter(m => mdProbeOf(m.id)).length;
     $('mdNote').textContent = mdAll.length + ' 个模型 · 已刷新降级缓存' + (hit ? ' · ' + hit + ' 个有实测上限' : '');
     renderModels();
+    populateAliasTargets();
   } catch (e) {
     mdAll = [];
     tb.innerHTML = '<tr><td colspan="7"><div class="empty">' + esc(e.message) + '</div></td></tr>';
     $('mdCount').textContent = '';
   }
 }
+
+function populateAliasTargets() {
+  const el = $('aliasTarget');
+  if (!el) return;
+  const original = el.value;
+  el.innerHTML = '<option value="">选择上游模型…</option>' + mdAll
+    .filter(m => m.id && /^(cn|global|zcode|qoder|qoder-cn|qwenwork|qwenwork-enterprise|codearts):/.test(m.id))
+    .map(m => '<option value="' + esc(m.id) + '">' + esc(m.id) + '</option>').join('');
+  if (original) el.value = original;
+}
+function renderAliasRows() {
+  const el = $('aliasRows');
+  if (!el) return;
+  const all = [
+    ...Object.entries(modelAliasWB).map(([id, targets]) => ({id, targets, provider:false})),
+    ...Object.entries(modelAliasProvider).map(([id, target]) => ({id, targets:[target], provider:true})),
+  ];
+  if (!all.length) { el.innerHTML = '<div class="pa-note">还没有设置模型映射。可直接选择现有模型并添加对外名称。</div>'; return; }
+  el.innerHTML = all.sort((a,b) => a.id.localeCompare(b.id)).map(a =>
+    '<div class="alias-row"><code>' + esc(a.id) + '</code><span class="pa-note">' +
+    esc(a.targets.join(' · ')) + '</span><div class="actions">' +
+    '<button class="xs" data-alias-edit="' + esc(a.id) + '">编辑</button>' +
+    '<button class="xs danger" data-alias-remove="' + esc(a.id) + '">移除</button>' +
+    '</div></div>').join('');
+}
+async function loadAliasConfig() {
+  try {
+    const d = await api('config');
+    modelAliasWB = { ...(d.config?.model_mapping?.aliases || {}) };
+    modelAliasProvider = { ...(d.config?.model_mapping?.provider_aliases || {}) };
+    renderAliasRows();
+  } catch (e) { $('aliasStatus').textContent = '无法读取模型映射：' + e.message; }
+}
+async function persistAliases(wb, providers) {
+  const d = await api('config', {method:'POST',body:JSON.stringify({
+    model_mapping:{aliases:wb,provider_aliases:providers},
+  })});
+  modelAliasWB = wb; modelAliasProvider = providers;
+  renderAliasRows();
+  $('aliasStatus').textContent = '已保存至网关配置；需重启 Multi2API 后路由及 /v1/models 生效。';
+  toast('映射已保存，重启网关后生效', 'ok');
+  return d;
+}
+$('btnAliasSave').onclick = async () => {
+  const alias = $('aliasName').value.trim();
+  const target = $('aliasTarget').value;
+  const both = $('aliasBothRealms').checked;
+  if (!alias || /[:\s]/.test(alias) || alias.length > 128 || !target) {
+    toast('请填写不带冒号/空格的对外模型名并选择上游模型', 'err'); return;
+  }
+  if (mdAll.some(m => m.id === alias)) { toast('对外模型名与现有上游 ID 冲突', 'err'); return; }
+  const wb = { ...modelAliasWB }, providers = { ...modelAliasProvider };
+  delete wb[alias]; delete providers[alias];
+  if (/^(cn|global):/.test(target)) {
+    const bare = target.split(':').slice(1).join(':');
+    const targets = both ? ['cn:' + bare, 'global:' + bare] : [target];
+    if (both && targets.some(t => !mdAll.some(m => m.id === t))) {
+      toast('所选模型没有同时出现在 CN 和 Global 中，不能合并', 'err'); return;
+    }
+    wb[alias] = targets;
+  } else if (/^(zcode|qoder|qoder-cn|qwenwork|qwenwork-enterprise|codearts):/.test(target)) {
+    if (both) { toast('多域自动选择仅适用于 WorkBuddy 同名模型', 'err'); return; }
+    providers[alias] = target;
+  } else { toast('不支持的上游模型', 'err'); return; }
+  const button = $('btnAliasSave'); button.disabled = true;
+  try { await persistAliases(wb, providers); $('aliasName').value = ''; $('aliasBothRealms').checked = false; }
+  catch (e) { toast('保存映射失败：' + e.message, 'err'); }
+  finally { button.disabled = false; }
+};
+$('aliasRows').onclick = async ev => {
+  const edit = ev.target.closest('button[data-alias-edit]');
+  const remove = ev.target.closest('button[data-alias-remove]');
+  if (!edit && !remove) return;
+  const alias = edit?.dataset.aliasEdit || remove?.dataset.aliasRemove;
+  const targets = modelAliasWB[alias] || (modelAliasProvider[alias] ? [modelAliasProvider[alias]] : []);
+  if (edit) {
+    $('aliasName').value = alias;
+    $('aliasTarget').value = targets[0] || '';
+    $('aliasBothRealms').checked = targets.length === 2;
+    $('aliasName').focus();
+  } else {
+    if (!confirm('确定移除模型映射「' + alias + '」吗？')) return;
+    const wb = { ...modelAliasWB }, providers = { ...modelAliasProvider };
+    delete wb[alias]; delete providers[alias];
+    try { await persistAliases(wb, providers); }
+    catch (e) { toast('移除映射失败：' + e.message, 'err'); }
+  }
+};
+$('btnAliasReload').onclick = async () => { await loadAliasConfig(); await loadModels(); };
 
 /* ── 模型筛选（按条件查询）───────────────────────────────────────────
    模型目录一次拉全（几十条），筛选与排序全部在前端完成：改条件零延迟，且不会
@@ -1262,8 +1452,10 @@ $('cfgForm').onsubmit = async ev => {
 };
 
 /* ── 添加账号 ─────────────────────────────────────────────────────── */
-function openAdd() {
+function openAdd(provider = 'workbuddy') {
   $('addVeil').classList.add('on');
+  $('addProvider').value = provider;
+  $('providerCredential').value = '';
   // 重置到登录标签
   switchAddTab('login');
   $('addPick').hidden = false;
@@ -1273,16 +1465,82 @@ function openAdd() {
   $('btnCopyUrl').hidden = true; $('btnOpenUrl').hidden = true;
   $('btnStartLogin').hidden = false; $('btnStartLogin').disabled = false;
   stopPoll();
+  loginState = null;
+  pvLoginProvider = '';
+  refreshProviderAdd();
 }
 function switchAddTab(tab) {
   document.querySelectorAll('#addTabs .tab').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   $('addTabLogin').hidden = tab !== 'login';
   $('addTabImport').hidden = tab !== 'import';
+  $('btnStartLogin').hidden = tab !== 'login' || $('addReady').hidden === false;
+  $('workbuddyImportPanel').hidden = $('addProvider').value !== 'workbuddy';
+  $('providerImportPanel').hidden = $('addProvider').value === 'workbuddy';
 }
 document.querySelectorAll('#addTabs .tab').forEach(b => {
   b.onclick = () => switchAddTab(b.dataset.tab);
 });
+async function refreshProviderAdd() {
+  const provider = $('addProvider').value;
+  const isWorkBuddy = provider === 'workbuddy';
+  $('addPick').hidden = !isWorkBuddy;
+  $('providerLoginPick').hidden = isWorkBuddy;
+  $('workbuddyImportPanel').hidden = !isWorkBuddy;
+  $('providerImportPanel').hidden = isWorkBuddy;
+  $('addLoad').hidden = true; $('addReady').hidden = true;
+  $('addDone').hidden = true; $('addErr').hidden = true;
+  $('btnStartLogin').disabled = !isWorkBuddy;
+  $('btnStartLogin').hidden = !$('addTabImport').hidden;
+  $('btnCopyUrl').hidden = true; $('btnOpenUrl').hidden = true;
+  pvMethods = [];
+  if (isWorkBuddy) return;
+  const hint = $('providerLoginHint');
+  hint.textContent = '正在读取官方授权方式…';
+  try {
+    const { methods = [] } = await api('providers/methods?provider=' + encodeURIComponent(provider));
+    if ($('addProvider').value !== provider) return;
+    pvMethods = methods;
+    const sel = $('providerLoginMethod');
+    sel.replaceChildren();
+    for (const m of methods) {
+      const option = document.createElement('option');
+      option.value = String(m.id); option.textContent = m.label;
+      sel.appendChild(option);
+    }
+    $('btnStartLogin').disabled = methods.length === 0;
+    hint.textContent = methods.length
+      ? '由该平台的官方 OAuth / 设备授权流程完成登录，不会伪造设备身份。'
+      : '此平台的登录需要官方客户端或本机 OAuth 回调。请切换到「导入 JSON」导入已有的合法凭据。';
+    renderProviderLoginInputs();
+  } catch (e) { hint.textContent = '读取授权方式失败：' + e.message; }
+}
+function renderProviderLoginInputs() {
+  const target = $('providerLoginInputs');
+  target.replaceChildren();
+  const method = pvMethods.find(m => String(m.id) === $('providerLoginMethod').value);
+  for (const prompt of method?.prompts || []) {
+    if (!prompt.key) continue;
+    const label = document.createElement('label');
+    label.className = 'fld';
+    const title = document.createElement('span');
+    title.className = 'lb'; title.textContent = prompt.message || prompt.key;
+    const input = prompt.type === 'select' ? document.createElement('select') : document.createElement('input');
+    input.dataset.pvPrompt = prompt.key;
+    if (prompt.type !== 'select') {
+      input.type = prompt.type === 'password' ? 'password' : 'text';
+      input.autocomplete = 'off'; input.placeholder = prompt.placeholder || '';
+    } else for (const o of prompt.options || []) {
+      const option = document.createElement('option');
+      option.value = o.value; option.textContent = o.label || o.value;
+      input.appendChild(option);
+    }
+    label.append(title,input); target.appendChild(label);
+  }
+}
+$('providerLoginMethod').onchange = renderProviderLoginInputs;
+$('addProvider').onchange = () => { stopPoll(); loginState = null; refreshProviderAdd(); };
 function startAddLogin() {
+  if ($('addProvider').value !== 'workbuddy') { startProviderLogin(); return; }
   const realm = (document.querySelector('input[name="addRealm"]:checked') || {}).value || 'cn';
   $('btnStartLogin').disabled = true;
   $('addLoad').hidden = false; $('addErr').hidden = true;
@@ -1301,17 +1559,45 @@ function startAddLogin() {
     $('addErr').textContent = e.message;
   });
 }
+async function startProviderLogin() {
+  const provider = $('addProvider').value;
+  const method = Number($('providerLoginMethod').value);
+  const inputs = {};
+  for (const el of $('providerLoginInputs').querySelectorAll('[data-pv-prompt]')) {
+    inputs[el.dataset.pvPrompt] = el.value;
+  }
+  $('btnStartLogin').disabled = true;
+  $('addLoad').hidden = false; $('addErr').hidden = true;
+  try {
+    const result = await api('providers/login/start', {
+      method:'POST', body: JSON.stringify({ provider, method, inputs }),
+    });
+    loginState = result.state; pvLoginProvider = provider;
+    $('addUrl').textContent = result.url;
+    $('providerLoginPick').hidden = true;
+    $('addLoad').hidden = true; $('addReady').hidden = false;
+    $('btnStartLogin').hidden = true;
+    $('btnCopyUrl').hidden = false; $('btnOpenUrl').hidden = false;
+    loginTimer = setInterval(pollLogin, 3000);
+  } catch (e) {
+    $('addLoad').hidden = true; $('btnStartLogin').disabled = false;
+    $('addErr').hidden = false; $('addErr').textContent = e.message;
+  }
+}
 function stopPoll() { if (loginTimer) { clearInterval(loginTimer); loginTimer = null; } }
 async function pollLogin() {
   if (!loginState) return;
   try {
-    const r = await api('login/poll?state=' + encodeURIComponent(loginState));
+    const r = pvLoginProvider
+      ? await api('providers/login/poll', { method:'POST', body:JSON.stringify({state:loginState}) })
+      : await api('login/poll?state=' + encodeURIComponent(loginState));
+    if (r.error) throw new Error(r.error);
     if (r.done) {
       stopPoll();
       $('addReady').hidden = true;
       $('addDone').hidden = false;
-      $('addDone').textContent = '已添加 ' + (r.nickname || r.uid) + (r.realm === 'global' ? '（国际版）' : '') + (r.credits >= 0 ? ' · 积分 ' + r.credits + (r.credits_total > 0 ? '/' + r.credits_total : '') : '') + '，账号已载入池中';
-      setTimeout(() => { closeAdd(); loadOverview(true); }, 1600);
+      $('addDone').textContent = '已添加 ' + (r.account || r.nickname || r.uid) + (r.realm === 'global' ? '（国际版）' : '') + (r.credits >= 0 ? ' · 积分 ' + r.credits + (r.credits_total > 0 ? '/' + r.credits_total : '') : '') + '，账号已载入池中';
+      setTimeout(() => { closeAdd(); loadOverview(true); loadProviderAccounts(); loadModels(); }, 1600);
     }
   } catch (e) {
     stopPoll();
@@ -1320,10 +1606,10 @@ async function pollLogin() {
     $('addErr').textContent = e.message + '（关闭后重新添加）';
   }
 }
-function closeAdd() { stopPoll(); loginState = null; $('addVeil').classList.remove('on'); }
+function closeAdd() { stopPoll(); loginState = null; pvLoginProvider = ''; $('providerCredential').value = ''; $('addVeil').classList.remove('on'); }
 $('btnCloseAdd').onclick = closeAdd;
 $('btnStartLogin').onclick = startAddLogin;
-$('btnOpenUrl').onclick = () => open($('addUrl').textContent, '_blank');
+$('btnOpenUrl').onclick = () => open($('addUrl').textContent, '_blank', 'noopener,noreferrer');
 $('btnCopyUrl').onclick = () => navigator.clipboard.writeText($('addUrl').textContent)
   .then(() => toast('链接已复制', 'ok'), () => toast('复制失败，请手动选择复制', 'err'));
 $('importFile').onchange = async () => {
@@ -1351,9 +1637,26 @@ $('importFile').onchange = async () => {
   }
   $('importFile').value = '';
 };
+$('btnImportProvider').onclick = async () => {
+  const provider = $('addProvider').value;
+  const button = $('btnImportProvider');
+  button.disabled = true;
+  $('importDone').hidden = true; $('importErr').hidden = true;
+  try {
+    let credential = JSON.parse($('providerCredential').value.trim());
+    if (credential && typeof credential === 'object' && credential[provider]) credential = credential[provider];
+    const r = await api('providers/import', {method:'POST',body:JSON.stringify({provider,credential})});
+    $('providerCredential').value = '';
+    $('importDone').textContent = '已导入 ' + r.account + '，请查询额度确认授权有效';
+    $('importDone').hidden = false;
+    await loadProviderAccounts();
+    loadModels();
+  } catch (e) { $('importErr').hidden = false; $('importErr').textContent = '导入失败：' + e.message; }
+  finally { button.disabled = false; }
+};
 
 /* ── 顶部动作 ─────────────────────────────────────────────────────── */
-$('btnAdd').onclick = openAdd;
+$('btnAdd').onclick = () => openAdd('workbuddy');
 $('btnRefresh').onclick = async () => {
   const b = $('btnRefresh');
   b.disabled = true; b.textContent = '刷新中…';

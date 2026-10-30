@@ -47,7 +47,8 @@
         "cn:deepseek-v4.1-flash",
         "global:deepseek-v4.1-flash"
       ]
-    }
+    },
+    "provider_aliases": {}
   },
   "providers": {
     "enabled": false,

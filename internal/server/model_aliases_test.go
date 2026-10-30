@@ -16,6 +16,36 @@ var deepseekAlias = map[string][]string{
 	},
 }
 
+func TestProviderAliasValidationAndListing(t *testing.T) {
+	valid := map[string]string{"glm-zcode": "zcode:GLM-5.3-Flash"}
+	if err := ValidateProviderAliases(valid, deepseekAlias); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []map[string]string{
+		{"": "zcode:GLM-5.3-Flash"},
+		{"cn:test": "zcode:GLM-5.3-Flash"},
+		{"deepseek-v4.1-flash": "qoder:fast"},
+		{"new": "global:glm-5.3"},
+		{"new": "invalid:model"},
+		{"new": "zcode:"},
+	} {
+		if err := ValidateProviderAliases(bad, deepseekAlias); err == nil {
+			t.Errorf("invalid Provider alias accepted: %v", bad)
+		}
+	}
+	input := []map[string]any{{"id": "zcode:GLM-5.3-Flash", "context_length": 150000}}
+	out := mapProviderAliases(input, valid)
+	if len(out) != 2 || out[1]["id"] != "glm-zcode" || out[1]["source_model"] != "zcode:GLM-5.3-Flash" {
+		t.Fatalf("alias not advertised with source metadata: %v", out)
+	}
+	if input[0]["id"] != "zcode:GLM-5.3-Flash" {
+		t.Fatal("source catalogue mutated")
+	}
+	if x := mapProviderAliases([]map[string]any{}, valid); len(x) != 0 {
+		t.Fatal("cannot list an alias for a provider model absent from the catalogue")
+	}
+}
+
 func TestModelAliasesValidateAndResolve(t *testing.T) {
 	if err := ValidateModelAliases(deepseekAlias); err != nil {
 		t.Fatal(err)

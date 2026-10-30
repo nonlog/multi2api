@@ -593,6 +593,29 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
   .exp-main .note { margin-top: 2px; font-size: 11px; color: var(--ink-3); }
   .exp-main.err { color: var(--bad); }
 
+/* 多平台管理延续原有账号池视觉体系，避免另起一套插件控制台。 */
+.provider-grid { display:grid; grid-template-columns: repeat(6,minmax(0,1fr)); gap:8px; }
+.provider-grid .p-sum { background:var(--surface-2); border:1px solid var(--line-soft); border-radius:9px; padding:10px 12px; min-width:0; }
+.provider-grid .p-sum strong {display:block;font:600 19px/1.4 var(--mono);color:var(--ink)}
+.provider-grid .p-sum span {font-size:11.5px;color:var(--ink-3)}
+.pa-actions {display:flex;gap:5px;justify-content:flex-end;align-items:center;flex-wrap:wrap;}
+.pa-status {display:inline-flex;align-items:center;gap:6px;white-space:nowrap;}
+.pa-status:before {content:'';width:6px;height:6px;border-radius:50%;background:var(--ok)}
+.pa-status.warn:before {background:var(--warn)}
+.pa-status.bad:before {background:var(--bad)}
+.pa-note {font-size:11.5px;color:var(--ink-3);margin-top:5px}
+.native-provider-head {display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.native-provider-head select {width:auto;min-width:160px}
+.alias-grid {display:grid;grid-template-columns:minmax(170px,1fr) minmax(230px,1.5fr) auto;gap:10px;align-items:end}
+.alias-grid label {display:block;color:var(--ink-2);font-size:12px}
+.alias-grid label input,.alias-grid label select {margin-top:5px}
+.alias-row {display:grid;grid-template-columns: minmax(130px,1fr) minmax(200px,2fr) auto;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line-soft)}
+.alias-row:last-child {border-bottom:0}
+.alias-row code {font:12px var(--mono);overflow-wrap:anywhere}
+.alias-row .actions {display:flex;gap:6px}
+.provider-import-note {font-size:12px;color:var(--ink-3);padding:8px 0 12px}
+@media(max-width:960px){.provider-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.alias-grid{grid-template-columns:1fr}.alias-row{grid-template-columns:1fr}}
+@media(max-width:600px){.provider-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -647,13 +670,30 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
     <!-- 账号池 -->
     <section class="view" id="view-accounts">
       <div class="stats">
-        <div class="stat"><div class="v" id="sTotal">-</div><div class="k">账号总数</div></div>
+        <div class="stat"><div class="v" id="sTotal">-</div><div class="k">WorkBuddy 账号数</div></div>
         <div class="stat good"><div class="v" id="sHealthy">-</div><div class="k">可用</div></div>
         <div class="stat warn"><div class="v" id="sCooling">-</div><div class="k">冷却中</div></div>
         <div class="stat bad"><div class="v" id="sDisabled">-</div><div class="k">已禁用</div></div>
         <div class="stat warn"><div class="v" id="sPaused">-</div><div class="k">已暂停选号</div></div>
         <div class="stat"><div class="v" id="sCredits">-</div><div class="k">积分剩余 / 总额</div></div>
         <div class="stat"><div class="v" id="sSticky">-</div><div class="k">粘性会话</div></div>
+      </div>
+
+      <div class="box" id="providerAccountBox">
+        <header>
+          <h3>多平台账号 <span class="hint">与 WorkBuddy 共用一个 API 入口、模型目录和网关密钥</span></h3>
+          <span class="grow"></span>
+          <button class="xs" id="btnProviderAccounts">刷新账号</button>
+          <button class="xs primary" id="btnAddProvider">添加平台账号</button>
+        </header>
+        <div class="pad"><div id="providerSummary" class="provider-grid"></div></div>
+        <div class="tbl-wrap">
+          <table class="acc">
+            <thead><tr><th>平台</th><th>账号</th><th>凭据状态</th><th>签到</th><th>额度 / 套餐</th><th class="c-acts">操作</th></tr></thead>
+            <tbody id="providerAccountBody"><tr><td colspan="6"><div class="empty">正在读取平台账号…</div></td></tr></tbody>
+          </table>
+        </div>
+        <div class="pad" style="padding-top:9px"><div class="hint">账号登录有效性需以实际额度查询或请求结果判断；“已导入”不等于可用。WorkBuddy 的积分、成长任务和旅行功能仍保留在下方原账号池。</div></div>
       </div>
 
       <!-- 卡片默认可见：此前 hidden + 「仅点检查才渲染」形成死锁（按钮藏在隐藏卡片里，
@@ -671,7 +711,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
 
       <div class="box">
         <header>
-          <h3>账号池</h3>
+          <h3>WorkBuddy 账号池</h3>
           <span class="grow"></span>
           <span class="note" id="accNote"></span>
           <button class="xs" id="btnCheckinAll">全部签到</button>
@@ -755,6 +795,12 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
             <option value="">全部域</option>
             <option value="cn">国内版 CN</option>
             <option value="global">国际版 Global</option>
+            <option value="zcode">ZCode</option>
+            <option value="qoder">Qoder 国际</option>
+            <option value="qoder-cn">Qoder 国内</option>
+            <option value="qwenwork">千问办公</option>
+            <option value="qwenwork-enterprise">千问办公企业</option>
+            <option value="codearts">华为 CodeArts</option>
           </select>
           <select id="mdCap" aria-label="按能力筛选">
             <option value="">全部能力</option>
@@ -794,6 +840,19 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>积分倍率</th><th>默认档</th><th>支持的思考档位</th><th>上下文长度</th><th>最大输出</th></tr></thead>
           <tbody id="mdBody"></tbody>
         </table>
+        </div>
+      </div>
+      <div class="box" id="modelAliasBox">
+        <header><h3>模型映射 <span class="hint">直接配置对外模型 ID → 实际上游模型</span></h3><span class="grow"></span><button class="xs" id="btnAliasReload">刷新映射</button></header>
+        <div class="pad">
+          <div class="alias-grid">
+            <label>对外模型名<input id="aliasName" placeholder="例如 glm-fast 或 coding-default" spellcheck="false" maxlength="128"></label>
+            <label>实际模型<select id="aliasTarget"><option value="">选择上游模型…</option></select></label>
+            <button id="btnAliasSave" class="primary" type="button">保存映射</button>
+          </div>
+          <label class="realm-opt" style="margin-top:11px"><input type="checkbox" id="aliasBothRealms"> 同时映射 CN 与 Global 的同名 WorkBuddy 模型（账号池自动选择）</label>
+          <div id="aliasStatus" class="pa-note">映射修改保存到当前配置后，需要重启网关生效；旧模型 ID 不受影响。</div>
+          <div id="aliasRows" style="margin-top:13px"></div>
         </div>
       </div>
     </section>
@@ -1255,6 +1314,18 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       </div>
     </header>
     <div class="body">
+      <label class="fld">
+        <span class="lb">账号所属平台</span>
+        <select id="addProvider">
+          <option value="workbuddy">WorkBuddy（国内 / 国际）</option>
+          <option value="zcode">ZCode</option>
+          <option value="qoder">Qoder 国际版</option>
+          <option value="qoder-cn">Qoder 国内版</option>
+          <option value="qwenwork">千问办公</option>
+          <option value="qwenwork-enterprise">千问办公企业</option>
+          <option value="codearts">华为 CodeArts</option>
+        </select>
+      </label>
       <!-- 浏览器登录 -->
       <div id="addTabLogin" class="tab-panel">
         <div id="addPick">
@@ -1264,6 +1335,11 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
             <label class="realm-opt"><input type="radio" name="addRealm" value="global"> 国际版（Global）</label>
           </div>
           <div class="hint" style="font-size:12px;margin-top:2px">国际版登录后，网关自动完成注册地区、激活与试用额度领取，全程无需手动操作。</div>
+        </div>
+        <div id="providerLoginPick" hidden>
+          <label class="fld"><span class="lb">授权方式</span><select id="providerLoginMethod"></select></label>
+          <div id="providerLoginInputs"></div>
+          <div id="providerLoginHint" class="hint">通过对应平台的真实 OAuth / 设备授权登录，不会生成虚构设备身份。</div>
         </div>
         <div id="addLoad" class="state" hidden><span class="dots">正在获取授权链接</span></div>
         <div id="addReady" hidden>
@@ -1276,8 +1352,12 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       </div>
       <!-- 导入 JSON -->
       <div id="addTabImport" class="tab-panel" hidden>
-        <div class="hint" style="margin-bottom:8px">选择 cockpit tools 导出的 JSON 文件，批量导入账号。文件需为账号数组格式。</div>
-        <input type="file" id="importFile" accept=".json" style="margin-bottom:8px">
+        <div id="workbuddyImportPanel"><div class="hint" style="margin-bottom:8px">选择 cockpit tools 导出的 JSON 文件，批量导入 WorkBuddy 账号。</div><input type="file" id="importFile" accept=".json" style="margin-bottom:8px"></div>
+        <div id="providerImportPanel" hidden>
+          <div class="provider-import-note">粘贴该平台官方登录后导出的凭据 JSON（包含 <code>access</code> / <code>refresh</code>）。仅写入 Multi2API 私有凭据文件，不会修改 Magpie。凭据不会存储在浏览器本地。</div>
+          <textarea id="providerCredential" rows="7" spellcheck="false" placeholder='{"type":"oauth","access":"...","refresh":"...","accountId":"..."}'></textarea>
+          <button class="xs primary" id="btnImportProvider" type="button" style="margin-top:10px">导入此平台账号</button>
+        </div>
         <div id="importDone" class="state ok" hidden></div>
         <div id="importErr" class="state err" hidden></div>
       </div>

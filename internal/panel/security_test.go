@@ -12,6 +12,40 @@ func newTestPanel() *Panel {
 	return New(Config{Version: "test", APIKey: "test-key"})
 }
 
+func TestUnifiedProviderPanelLinksAndAuthentication(t *testing.T) {
+	p := newTestPanel()
+	page := httptest.NewRecorder()
+	p.ServeHTTP(page, httptest.NewRequest("GET", "/panel/", nil))
+	if page.Code != http.StatusOK {
+		t.Fatalf("panel HTML: %d", page.Code)
+	}
+	for _, marker := range []string{
+		`id="providerAccountBody"`, `id="providerSummary"`,
+		`id="addProvider"`, `id="providerLoginMethod"`,
+		`id="providerCredential"`, `id="modelAliasBox"`,
+		`id="aliasTarget"`, `id="aliasRows"`,
+		`<option value="codearts">`, `<option value="qoder-cn">`,
+	} {
+		if !strings.Contains(page.Body.String(), marker) {
+			t.Errorf("unified panel missing %s", marker)
+		}
+	}
+	for _, item := range []struct{ method, path string }{
+		{"GET", "/panel/api/providers/accounts"},
+		{"GET", "/panel/api/providers/methods?provider=qoder"},
+		{"POST", "/panel/api/providers/login/start"},
+		{"POST", "/panel/api/providers/login/poll"},
+		{"POST", "/panel/api/providers/import"},
+		{"POST", "/panel/api/providers/account/action"},
+	} {
+		unauthorized := httptest.NewRecorder()
+		p.ServeHTTP(unauthorized, httptest.NewRequest(item.method, item.path, nil))
+		if unauthorized.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s: expected same gateway authentication, got %d", item.method, item.path, unauthorized.Code)
+		}
+	}
+}
+
 // 面板安全响应头必须覆盖：页面、静态脚本、鉴权失败响应。
 func TestSecurityHeadersOnAllPanelResponses(t *testing.T) {
 	p := newTestPanel()

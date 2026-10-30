@@ -32,7 +32,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.13.1-panel"
+const appVersion = "1.13.2-panel"
 
 // usagePathFor 由 state 文件路径推出用量文件路径：同目录、文件名 usage.json。
 // 这样 config 里改 state_file 时用量数据跟着走，不需要额外配置项。
@@ -291,8 +291,9 @@ func main() {
 		Live:        live,
 		// 模型上限探测数据（scripts/probe_max_tokens.py --panel-out 写入）：
 		// 与 state 文件同目录，缺省 data/output_probes.json。
-		ProbeFile:  stateSibling(cfg.StateFile, "output_probes.json"),
-		ConfigPath: *cfgPath,
+		ProbeFile:    stateSibling(cfg.StateFile, "output_probes.json"),
+		ProviderHost: externalProviders,
+		ConfigPath:   *cfgPath,
 		LoadConfig: func() (any, error) {
 			return Load(*cfgPath)
 		},
@@ -324,9 +325,10 @@ func main() {
 		// 裸用/测试路径拿到同一缺省值。
 		RecordClientInfo: cfg.Logging.RequestClientInfo,
 		// handler 侧第三道闸（global realm）：false（显式逃生门）时不列 global: 模型名。
-		GlobalEnabled: cfg.Global.Enabled,
-		ModelAliases:  cfg.ModelMapping.Aliases,
-		ProviderHost:  externalProviders,
+		GlobalEnabled:   cfg.Global.Enabled,
+		ModelAliases:    cfg.ModelMapping.Aliases,
+		ProviderAliases: cfg.ModelMapping.ProviderAliases,
+		ProviderHost:    externalProviders,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -450,6 +452,17 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 		return nil, fmt.Errorf("parse submitted config: %w", err)
 	}
 	merged := mergeConfigMaps(cur, incoming)
+	// Alias dictionaries represent the full set of mappings. A recursive map
+	// merge would resurrect a deleted alias, making the panel's "移除" lie.
+	if submittedMapping, ok := incoming["model_mapping"].(map[string]any); ok {
+		if mergedMapping, ok := merged["model_mapping"].(map[string]any); ok {
+			for _, field := range []string{"aliases", "provider_aliases"} {
+				if replacement, provided := submittedMapping[field]; provided {
+					mergedMapping[field] = replacement
+				}
+			}
+		}
+	}
 
 	// 2) 校验（与启动同一套 Default+normalize），失败直接返回、不落盘。
 	newCfg, err := ParseConfig(mergedJSON(merged))
@@ -530,7 +543,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 // 恒返回完整清单中的"与当前进程装配期依赖相关"的项——面板据此提示用户。
 func restartRequiredFields(c *Config) []string {
 	var out []string
-	out = append(out, "model_mapping.aliases", "providers.enabled", "providers.auth_file", "providers.auto_checkin")
+	out = append(out, "model_mapping.aliases", "model_mapping.provider_aliases", "providers.enabled", "providers.auth_file", "providers.auto_checkin")
 	// 这些字段在进程内被监听地址/HTTP client/目录句柄等装配期对象捕获。
 	if c.Listen != "" {
 		out = append(out, "listen")

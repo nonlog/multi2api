@@ -38,6 +38,32 @@ func TestMaintenanceProviderFilter(t *testing.T) {
 	}
 }
 
+func TestProviderAdminAllowlistAndMethodQuery(t *testing.T) {
+	var called string
+	h := &Host{client: &http.Client{Transport: maintenanceTransport(func(req *http.Request) (*http.Response, error) {
+		called = req.URL.String()
+		return &http.Response{StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(`{"data":[]}`)), Header: make(http.Header)}, nil
+	})}}
+	if _, code, err := h.Admin(context.Background(), "GET", "methods?provider=qoder-cn", nil); err != nil || code != 200 {
+		t.Fatalf("real Provider sign-in method request rejected: %v code=%d", err, code)
+	}
+	if called != "http://provider.local/admin/methods?provider=qoder-cn" {
+		t.Errorf("wrong private worker route: %s", called)
+	}
+	for _, input := range []struct{ method, endpoint string }{
+		{"GET", "../../health"},
+		{"POST", "accounts"},
+		{"GET", "methods?provider=bogus"},
+		{"GET", "methods?provider=qoder&secret=steal"},
+		{"GET", "login/start"},
+	} {
+		if _, _, err := h.Admin(context.Background(), input.method, input.endpoint, nil); err == nil {
+			t.Errorf("unsafe admin path accepted: %s %s", input.method, input.endpoint)
+		}
+	}
+}
+
 func TestRecognizeProviderModel(t *testing.T) {
 	for _, model := range []string{
 		"zcode:glm-5.3", "qoder:qoder-model", "qoder-cn:qoder-model",

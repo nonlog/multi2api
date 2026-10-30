@@ -127,6 +127,9 @@ type Config struct {
 	// An alias points to one or both realm-qualified IDs of the SAME model.
 	ModelMapping struct {
 		Aliases map[string][]string `json:"aliases"`
+		// ProviderAliases routes a friendly downstream name to ONE built-in
+		// provider-qualified model. CN/Global auto-pool aliases remain separate.
+		ProviderAliases map[string]string `json:"provider_aliases"`
 	} `json:"model_mapping"`
 
 	// The optional plugin runtime is supervised by WorkBuddy2API itself,
@@ -340,6 +343,9 @@ func Load(path string) (*Config, error) {
 	if err := server.ValidateModelAliases(c.ModelMapping.Aliases); err != nil {
 		return nil, err
 	}
+	if err := server.ValidateProviderAliases(c.ModelMapping.ProviderAliases, c.ModelMapping.Aliases); err != nil {
+		return nil, err
+	}
 	return c, nil
 }
 
@@ -353,6 +359,9 @@ func ParseConfigInto(raw []byte, c *Config) (*Config, error) {
 		return nil, err
 	}
 	if err := server.ValidateModelAliases(c.ModelMapping.Aliases); err != nil {
+		return nil, err
+	}
+	if err := server.ValidateProviderAliases(c.ModelMapping.ProviderAliases, c.ModelMapping.Aliases); err != nil {
 		return nil, err
 	}
 	return c, nil

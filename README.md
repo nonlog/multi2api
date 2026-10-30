@@ -201,6 +201,10 @@ Multi2API 是一个自托管的 **OpenAI / Responses / Anthropic Messages 兼容
 
 ### 内置多 Provider 与模型统一映射
 
+**v1.13.2 原生管理面板整合**：在同一 `/panel/` 管理界面中，`账号池` 新增「多平台账号」区域，可列出各 Provider 的实际账号、检查授权状态、查询单平台额度、查看每日签到、禁用/启用及移除。顶部「添加账号」支持选择 WorkBuddy、ZCode、Qoder 国内/国际、千问办公、CodeArts，复用原有弹窗与认证密钥。ZCode、Qoder、千问办公按内置插件提供的真实设备授权 / OAuth 流程取得凭据；也可通过「导入 JSON」写入独立 Provider 凭据副本，不改写 Magpie。**CodeArts 官方 OAuth 使用 `127.0.0.1` 本机回调，VPS 的远程 Web 面板不提供不可用的浏览器登录按钮**，请先使用官方本地授权，再导入已授权凭据。已有账号无需重新导入；在「多平台账号」中会自动显示。Qoder 返回 HTTP 401 表示原授权失效，不能靠复制旧 Magpie 凭据恢复。
+
+「模型与档位」现在同时列出所有启用的 Provider 模型，可按平台筛选。底部「模型映射」支持可视化新增、编辑、移除：WorkBuddy CN/Global 同名模型仍使用现有 `model_mapping.aliases` 跨域账号池，单一第三方 Provider 模型可设置 `model_mapping.provider_aliases`（如 `"coding-fast":"zcode:GLM-5.3-Flash"`）。映射保存到同一个配置文件，**需重启网关后路由生效**；原始 Provider 模型 ID 始终保留，未加入的模型不会伪装成可用。所有模型仍由原网关的 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 统一提供。
+
 本 fork 支持 `model_mapping.aliases` 把 WorkBuddy 的
 `cn:deepseek-v4.1-flash`、`global:deepseek-v4.1-flash`
 合并成唯一对外模型 `deepseek-v4.1-flash`。`/v1/models` 会去重，保留

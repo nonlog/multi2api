@@ -4,7 +4,60 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/nonlog/multi2api/internal/providerhost"
 )
+
+// ValidateProviderAliases rejects ambiguous or unsafe names. An integrated
+// Provider alias is a single provider:model route, not a WorkBuddy pool alias.
+func ValidateProviderAliases(aliases map[string]string, wbAliases map[string][]string) error {
+	for alias, target := range aliases {
+		if alias == "" || len(alias) > 128 || strings.TrimSpace(alias) != alias ||
+			strings.ContainsAny(alias, ":\r\n\t") {
+			return fmt.Errorf("model_mapping.provider_aliases: invalid alias %q", alias)
+		}
+		if _, duplicate := wbAliases[alias]; duplicate {
+			return fmt.Errorf("model_mapping.provider_aliases: %q already maps a WorkBuddy model", alias)
+		}
+		if len(target) > 256 {
+			return fmt.Errorf("model_mapping.provider_aliases: invalid model target")
+		}
+		if _, _, ok := providerhost.ModelProvider(target); !ok || strings.TrimSpace(target) != target {
+			return fmt.Errorf("model_mapping.provider_aliases: invalid built-in Provider target %q", target)
+		}
+	}
+	return nil
+}
+
+// Publish a friendly ID only when the corresponding provider model is
+// actually available in the current model catalogue. Never invent access.
+func mapProviderAliases(models []map[string]any, aliases map[string]string) []map[string]any {
+	if len(aliases) == 0 {
+		return models
+	}
+	byID := map[string]map[string]any{}
+	for _, m := range models {
+		if id, ok := m["id"].(string); ok {
+			byID[id] = m
+		}
+	}
+	for alias, target := range aliases {
+		if _, taken := byID[alias]; taken {
+			continue
+		}
+		if source, available := byID[target]; available {
+			entry := make(map[string]any, len(source)+3)
+			for k, v := range source {
+				entry[k] = v
+			}
+			entry["id"] = alias
+			entry["source_model"] = target
+			entry["is_alias"] = true
+			models = append(models, entry)
+		}
+	}
+	return models
+}
 
 // ValidateModelAliases ensures one downstream model resolves to the same
 // upstream bare ID in one or both realms. Cross-model mappings are deliberately

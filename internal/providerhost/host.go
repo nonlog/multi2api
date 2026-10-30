@@ -179,6 +179,59 @@ func (h *Host) Accounts(ctx context.Context) (map[string]any, error) {
 	return out, nil
 }
 
+// Admin forwards only a fixed set of authenticated panel operations to the
+// owner-private provider worker. Secrets never appear in logs or responses.
+// No public URL or user-supplied arbitrary worker path is accepted.
+func (h *Host) Admin(ctx context.Context, method, endpoint string, body []byte) (json.RawMessage, int, error) {
+	if h == nil {
+		return nil, http.StatusServiceUnavailable, errors.New("providers disabled")
+	}
+	allowed := map[string]string{
+		"accounts": "GET", "methods": "GET", "login/start": "POST",
+		"login/poll": "POST", "import": "POST", "account/action": "POST",
+	}
+	bareEndpoint := strings.SplitN(endpoint, "?", 2)[0]
+	if allowed[bareEndpoint] != method || len(body) > 96<<10 {
+		return nil, http.StatusBadRequest, errors.New("invalid provider admin request")
+	}
+	if strings.Contains(endpoint, "?") {
+		if bareEndpoint != "methods" {
+			return nil, http.StatusBadRequest, errors.New("unsupported admin query")
+		}
+		values, err := url.ParseQuery(strings.TrimPrefix(endpoint, "methods?"))
+		if err != nil || len(values) != 1 || !Recognizes(values.Get("provider")) {
+			return nil, http.StatusBadRequest, errors.New("invalid provider methods query")
+		}
+	}
+	timeout := 40 * time.Second
+	if bareEndpoint == "accounts" || bareEndpoint == "methods" || bareEndpoint == "login/poll" {
+		timeout = 10 * time.Second
+	}
+	path := "http://provider.local/admin/" + endpoint
+	// The only query parameter forwarded is the recognized Provider ID for
+	// the read-only sign-in methods catalog.
+	if bareEndpoint == "methods" && len(body) > 0 {
+		return nil, http.StatusBadRequest, errors.New("methods query uses a URL argument")
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, method, path, bytes.NewReader(body))
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, http.StatusBadGateway, err
+	}
+	defer resp.Body.Close()
+	out, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	if err != nil || !json.Valid(out) {
+		return nil, http.StatusBadGateway, errors.New("invalid provider admin response")
+	}
+	return out, resp.StatusCode, nil
+}
+
 // ReadMaintenance exposes only the public quota/check-in summaries supplied
 // by the bundled plugin's original usage and checkin hooks.
 func (h *Host) ReadMaintenance(ctx context.Context, endpoint string, provider ...string) (map[string]any, error) {

@@ -4,6 +4,7 @@
 // pinned magpie-community MIT reference in ../magpie-plugins/.
 import { readFile, rename, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
+import { randomUUID } from "node:crypto"
 import { ZCodeAuthPlugin } from "../magpie-plugins/zcode/index.mjs"
 import {
   QoderAuthPlugin, QoderCNAuthPlugin, QwenWorkAuthPlugin,
@@ -41,19 +42,20 @@ const usageCache = new Map()
 const pluginInstances = new Map()
 const modelCache = new Map()
 const roundRobin = new Map()
+const browserLogins = new Map()
+
+function allProviderKeys(id) {
+  return Object.keys(credentials).filter(k => k === id || k.startsWith(id + "#"))
+    .filter(k => {
+      const a = credentials[k]
+      return a && typeof a === "object" && !Array.isArray(a) &&
+        (typeof a.access === "string" && !!a.access.trim() ||
+         typeof a.refresh === "string" && !!a.refresh.trim())
+    }).sort()
+}
 
 function providerKeys(id) {
-  return Object.keys(credentials)
-    .filter(k => k === id || k.startsWith(id + "#"))
-    .filter(k => {
-      const record = credentials[k]
-      // Provider placeholders are not usable login sessions. Do not list
-      // them as active accounts or randomly route requests to them.
-      return record && typeof record === "object" &&
-        ((typeof record.access === "string" && !!record.access.trim()) ||
-         (typeof record.refresh === "string" && !!record.refresh.trim()))
-    })
-    .sort()
+  return allProviderKeys(id).filter(k => credentials[k].disabled !== true)
 }
 
 function pickAccount(id) {
@@ -64,17 +66,171 @@ function pickAccount(id) {
   return accounts[pos % accounts.length]
 }
 
-async function saveAuth(key, next) {
+async function changeAuth(mutator) {
   // Serialize refresh-token rotations: single-use tokens must not be
   // accidentally reverted by a concurrent write from a different Provider.
   writing = writing.catch(() => {}).then(async () => {
-    credentials[key] = next
+    mutator(credentials)
     const tmp = AUTH_FILE + ".tmp-" + process.pid
     await writeFile(tmp, JSON.stringify(credentials, null, 2) + "\n", { mode: 0o600 })
     await rename(tmp, AUTH_FILE)
     modelCache.clear()
+    usageCache.clear()
+    pluginInstances.clear()
   })
   await writing
+}
+
+async function saveAuth(key, next, { enable = false } = {}) {
+  // Background token refresh retains an explicitly disabled account. A
+  // conscious relogin or import restores the account to the usable pool.
+  return changeAuth(store => {
+    store[key] = { ...next, disabled: !enable && store[key]?.disabled === true }
+  })
+}
+
+function saveAccountKey(id, record) {
+  // A renewed sign-in replaces the same user, never silently leaves a stale
+  // duplicate in rotation. Never synthesize or claim a device identity.
+  const uid = String(record.uid || "")
+  const accountId = String(record.accountId || "")
+  const existing = allProviderKeys(id).find(key => {
+    const a = credentials[key]
+    return (uid && String(a.uid || "") === uid) ||
+      (accountId && String(a.accountId || "") === accountId)
+  })
+  if (existing) return existing
+  return !Object.hasOwn(credentials, id) ? id : id + "#" + randomUUID().slice(0, 10)
+}
+
+function validCredential(value) {
+  return value && typeof value === "object" && !Array.isArray(value) &&
+    (typeof value.access === "string" && value.access.trim().length > 0) &&
+    (value.type === "oauth" || value.type === "api" || value.type === undefined)
+}
+
+async function forgetCheckin(key) {
+  maintenanceWriting = maintenanceWriting.catch(() => {}).then(async () => {
+    delete maintenance.checkins[key]
+    const tmp = MAINTENANCE_FILE + ".tmp-" + process.pid
+    await writeFile(tmp, JSON.stringify(maintenance, null, 2) + "\n", { mode: 0o600 })
+    await rename(tmp, MAINTENANCE_FILE)
+  })
+  await maintenanceWriting
+}
+
+function publicAccount(id, key) {
+  const a = credentials[key]
+  const note = maintenance.checkins[key]
+  const expired = note?.outcome === "failed" && /sign-in has expired|status 401/i.test(note.message || "")
+  return {
+    provider: id, account: key,
+    label: String(a.cardName || a.name || a.email || a.accountId || a.uid || key).slice(0, 120),
+    disabled: a.disabled === true, type: a.type || "oauth",
+    state: expired ? "login_expired" : "unverified",
+    checkin: note?.outcome || "not_run", checkin_supported: maintenanceEligible(id),
+  }
+}
+
+async function adminAccounts() {
+  return responses(200, { providers: Object.keys(PROVIDERS),
+    data: Object.keys(PROVIDERS).flatMap(id => allProviderKeys(id).map(key => publicAccount(id, key))) })
+}
+
+// The plugin owns the OAuth/PKCE flow. Expose its methods, never reimplement
+// protocol headers, token exchanges or synthetic device IDs in the panel.
+async function loginMethods(id) {
+  if (!PROVIDERS[id]) return []
+  if (id === "codearts") return [] // callback targets the VPS loopback; cannot work from a remote browser
+  const plugin = await PROVIDERS[id]({ client: runtimeClient("__login_" + id) })
+  return (plugin.auth?.methods || []).map((m, index) => ({ ...m, index }))
+    .filter(m => m.type === "oauth" && typeof m.authorize === "function" &&
+      !/app's sign-in/i.test(m.label || ""))
+}
+
+async function adminMethods(req) {
+  const id = new URL(req.url).searchParams.get("provider")
+  if (!PROVIDERS[id]) return responses(400, { error: "未知 Provider" })
+  const methods = await loginMethods(id)
+  return responses(200, { provider: id, supported: methods.length > 0,
+    methods: methods.map(m => ({ id: m.index, label: String(m.label).slice(0, 100),
+      prompts: (m.prompts || []).map(p => ({ key: p.key, type: p.type,
+        message: p.message, options: p.options, placeholder: p.placeholder })) })) })
+}
+
+async function adminLoginStart(req) {
+  const { provider: id, method: methodIndex = 0, inputs = {} } = await req.json()
+  if (!PROVIDERS[id] || !Number.isInteger(methodIndex)) return responses(400, { error: "无效的登录方式" })
+  for (const [key, entry] of browserLogins) {
+    if (Date.now() - entry.at > 16 * 60_000) browserLogins.delete(key)
+  }
+  if (browserLogins.size >= 12) return responses(429, { error: "登录任务过多，请稍后重试" })
+  const methods = await loginMethods(id)
+  const method = methods.find(m => m.index === methodIndex)
+  if (!method) return responses(400, { error: "该 Provider 不支持此浏览器登录方式，可导入官方凭据" })
+  let flow
+  try { flow = await method.authorize(inputs) }
+  catch { return responses(502, { error: "无法向官方平台发起授权，请使用官方客户端登录后导入凭据" }) }
+  if (!flow?.url || !/^https:\/\//i.test(flow.url) || typeof flow.callback !== "function")
+    return responses(502, { error: "官方登录未返回安全的授权链接" })
+  const state = randomUUID()
+  const entry = { provider: id, at: Date.now(), done: false, error: "", account: "" }
+  browserLogins.set(state, entry)
+  // Start the vendor's real PKCE/device callback once, without tying it to
+  // the HTTP poll timeout; poll requests only observe the result.
+  void (async () => {
+    try {
+      const result = await flow.callback()
+      if (result?.type !== "success" || !validCredential(result)) throw new Error("sign-in failed")
+      if (browserLogins.get(state) !== entry) return
+      const record = { ...result, type: "oauth" }
+      const key = saveAccountKey(id, record)
+      await saveAuth(key, record, { enable: true })
+      await forgetCheckin(key)
+      entry.account = key
+      entry.done = true
+    } catch { entry.error = "授权未成功或已过期，请重新登录" }
+  })()
+  return responses(200, { state, url: flow.url, provider: id })
+}
+
+async function adminLoginPoll(req) {
+  const { state } = await req.json()
+  const entry = browserLogins.get(state)
+  if (!entry) return responses(404, { error: "登录会话不存在或已经过期" })
+  if (Date.now() - entry.at > 16 * 60_000) {
+    browserLogins.delete(state)
+    return responses(410, { error: "授权已过期，请重新开始" })
+  }
+  const result = { done: entry.done, error: entry.error,
+    ...(entry.done ? { account: entry.account, provider: entry.provider } : {}) }
+  if (entry.done || entry.error) browserLogins.delete(state)
+  return responses(200, result)
+}
+
+async function adminImport(req) {
+  const { provider: id, credential } = await req.json()
+  if (!PROVIDERS[id] || !validCredential(credential)) return responses(400, { error: "无效的 Provider 或凭据结构" })
+  if (JSON.stringify(credential).length > 60_000) return responses(413, { error: "凭据文件过大" })
+  const record = { ...credential, type: credential.type || "oauth" }
+  const key = saveAccountKey(id, record)
+  await saveAuth(key, record, { enable: true })
+  await forgetCheckin(key)
+  return responses(200, { imported: 1, provider: id, account: key })
+}
+
+async function adminAccountAction(req) {
+  const { provider: id, account, action } = await req.json()
+  if (!PROVIDERS[id] || !allProviderKeys(id).includes(account))
+    return responses(404, { error: "账号不存在" })
+  if (!["disable", "enable", "remove"].includes(action))
+    return responses(400, { error: "无效操作" })
+  await changeAuth(store => {
+    if (action === "remove") delete store[account]
+    else store[account] = { ...store[account], disabled: action === "disable" }
+  })
+  if (action === "remove") await forgetCheckin(account)
+  return responses(200, { ok: true, action, provider: id, account })
 }
 
 // Vendor check-ins are day-scoped. Use the vendor-facing Beijing calendar
@@ -340,6 +496,12 @@ async function handleChat(req, id) {
 async function dispatch(req) {
   const url = new URL(req.url)
   const path = url.pathname
+  if (req.method === "GET" && path === "/admin/accounts") return adminAccounts()
+  if (req.method === "GET" && path === "/admin/methods") return adminMethods(req)
+  if (req.method === "POST" && path === "/admin/login/start") return adminLoginStart(req)
+  if (req.method === "POST" && path === "/admin/login/poll") return adminLoginPoll(req)
+  if (req.method === "POST" && path === "/admin/import") return adminImport(req)
+  if (req.method === "POST" && path === "/admin/account/action") return adminAccountAction(req)
   if (req.method === "GET" && path === "/health") {
     return responses(200, { ready: true, providers: Object.keys(PROVIDERS), credential_count: Object.keys(credentials).length })
   }

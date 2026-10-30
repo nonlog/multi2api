@@ -80,9 +80,17 @@ no second API host or key.
 
 ## Known boundaries
 
-- **No automatic vendor sign-in or interactive OAuth UI yet.** Existing
-  credentials can be copied from the locally deployed Magpie plugin store
-  without re-login, subject to actual expiry and successful request tests.
+- **Native remote-panel sign-in**: the original Multi2API `/panel/` now
+  supports each plugin's real browser/device authorization for ZCode, Qoder,
+  Qoder CN and QwenWork, plus a local private credential import fallback.
+  **CodeArts OAuth requires a local callback (`127.0.0.1`)**, so the remote
+  VPS panel deliberately offers credential import instead of a false sign-in
+  promise. Existing imported accounts are listed automatically.
+- **Credential management is distinct from WorkBuddy credit accounting**:
+  third-party accounts are visible within the same Accounts page but use their
+  native quota/check-in hooks; they do not receive WorkBuddy growth tasks or
+  WorkBuddy credit figures. Provider aliases are configured visually in the
+  original Models page; saved aliases require a gateway restart.
 - ZCode Chat→Messages conversion supports text, image, function tools, tool
   results, and streamed arguments. Vendor-specific image/audio formats,
   proprietary reasoning signatures, and external server-side tools are not

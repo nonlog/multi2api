@@ -12,8 +12,10 @@ package panel
 
 import (
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -25,6 +27,7 @@ import (
 	"github.com/nonlog/multi2api/internal/httpauth"
 	"github.com/nonlog/multi2api/internal/livecfg"
 	"github.com/nonlog/multi2api/internal/pool"
+	"github.com/nonlog/multi2api/internal/providerhost"
 	"github.com/nonlog/multi2api/internal/reqlog"
 	"github.com/nonlog/multi2api/internal/scheduler"
 	"github.com/nonlog/multi2api/internal/upstream"
@@ -65,6 +68,9 @@ type Config struct {
 	// 写入；空或文件不存在 = model_probes 端点返回空集，面板不显示任何实测标注）。
 	// 只读展示：网关不解析、不依赖其内容做任何路由/出站决策。
 	ProbeFile string
+	// Embedded provider management is deliberately in the original panel,
+	// sharing its API key and its private Go-supervised Bun runtime.
+	ProviderHost *providerhost.Host
 }
 
 // Panel 管理面板 handler。挂载方式：外层 mux Handle("/panel/", panel)，
@@ -154,6 +160,12 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/request_metrics", p.withAuth(p.requestMetrics))
 	p.mux.HandleFunc("GET /panel/api/request_logs", p.withAuth(p.requestLogs))
 	p.mux.HandleFunc("GET /panel/api/models", p.withAuth(p.models))
+	p.mux.HandleFunc("GET /panel/api/providers/accounts", p.withAuth(p.providerAccounts))
+	p.mux.HandleFunc("GET /panel/api/providers/methods", p.withAuth(p.providerMethods))
+	p.mux.HandleFunc("POST /panel/api/providers/login/start", p.withAuth(p.providerLoginStart))
+	p.mux.HandleFunc("POST /panel/api/providers/login/poll", p.withAuth(p.providerLoginPoll))
+	p.mux.HandleFunc("POST /panel/api/providers/import", p.withAuth(p.providerImport))
+	p.mux.HandleFunc("POST /panel/api/providers/account/action", p.withAuth(p.providerAccountAction))
 	p.mux.HandleFunc("POST /panel/api/login/start", p.withAuth(p.loginStart))
 	p.mux.HandleFunc("GET /panel/api/login/poll", p.withAuth(p.loginPoll))
 	p.mux.HandleFunc("GET /panel/api/login/regions", p.withAuth(p.loginRegions))
@@ -186,6 +198,54 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/model_probes", p.withAuth(p.modelProbes))
 	p.mux.HandleFunc("GET /panel/api/config", p.withAuth(p.getConfig))
 	p.mux.HandleFunc("POST /panel/api/config", p.withAuth(p.saveConfig))
+}
+
+func (p *Panel) providerProxy(w http.ResponseWriter, r *http.Request, endpoint string) {
+	if p.cfg.ProviderHost == nil {
+		writeErr(w, http.StatusServiceUnavailable, "内置 Provider 未启用")
+		return
+	}
+	var body []byte
+	if r.Method == http.MethodPost {
+		var err error
+		body, err = io.ReadAll(io.LimitReader(r.Body, (96<<10)+1))
+		if err != nil || len(body) > 96<<10 || !json.Valid(body) {
+			writeErr(w, http.StatusBadRequest, "无效的 Provider 管理请求")
+			return
+		}
+	}
+	response, code, err := p.cfg.ProviderHost.Admin(r.Context(), r.Method, endpoint, body)
+	if err != nil {
+		writeErr(w, code, "Provider 服务暂不可用")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	_, _ = w.Write(response)
+}
+
+func (p *Panel) providerAccounts(w http.ResponseWriter, r *http.Request) {
+	p.providerProxy(w, r, "accounts")
+}
+func (p *Panel) providerMethods(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("provider")
+	if !providerhost.Recognizes(id) {
+		writeErr(w, http.StatusBadRequest, "未知 Provider")
+		return
+	}
+	p.providerProxy(w, r, "methods?provider="+url.QueryEscape(id))
+}
+func (p *Panel) providerLoginStart(w http.ResponseWriter, r *http.Request) {
+	p.providerProxy(w, r, "login/start")
+}
+func (p *Panel) providerLoginPoll(w http.ResponseWriter, r *http.Request) {
+	p.providerProxy(w, r, "login/poll")
+}
+func (p *Panel) providerImport(w http.ResponseWriter, r *http.Request) {
+	p.providerProxy(w, r, "import")
+}
+func (p *Panel) providerAccountAction(w http.ResponseWriter, r *http.Request) {
+	p.providerProxy(w, r, "account/action")
 }
 
 // ServeHTTP 统一入口：先写安全响应头再分发，保证页面、静态资源、API
@@ -353,6 +413,22 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The original model view must include the same embedded Provider models
+	// exposed by /v1/models, rather than silently listing WorkBuddy only.
+	if p.cfg.ProviderHost != nil {
+		for _, raw := range p.cfg.ProviderHost.Models(r.Context()) {
+			id, _ := raw["id"].(string)
+			if id == "" {
+				continue
+			}
+			out = append(out, map[string]any{
+				"id": id, "name": raw["name"], "vendor": raw["provider"],
+				"context_length":    raw["context_length"],
+				"max_output_tokens": raw["max_output_tokens"],
+				"provider":          raw["provider"],
+			})
+		}
+	}
 	if len(out) == 0 {
 		if len(fetchErrs) > 0 {
 			writeErr(w, http.StatusBadGateway, "fetch models: "+strings.Join(fetchErrs, "; "))
