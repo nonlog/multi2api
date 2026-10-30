@@ -332,7 +332,15 @@ func (h *Handler) providerMaintenance(w http.ResponseWriter, r *http.Request, ki
 		writeOpenAIError(w, http.StatusServiceUnavailable, "provider_disabled", "integrated providers are not enabled")
 		return
 	}
-	result, err := h.cfg.ProviderHost.ReadMaintenance(r.Context(), kind)
+	provider := ""
+	if kind == "usage" {
+		provider = r.URL.Query().Get("provider")
+		if provider != "" && !providerhost.Recognizes(provider) {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_provider", "unknown provider")
+			return
+		}
+	}
+	result, err := h.cfg.ProviderHost.ReadMaintenance(r.Context(), kind, provider)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadGateway, "provider_unavailable", "provider maintenance service unavailable")
 		return

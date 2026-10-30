@@ -1,6 +1,42 @@
 package providerhost
 
-import "testing"
+import (
+	"context"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+)
+
+type maintenanceTransport func(*http.Request) (*http.Response, error)
+
+func (f maintenanceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestMaintenanceProviderFilter(t *testing.T) {
+	var target string
+	h := &Host{client: &http.Client{Transport: maintenanceTransport(func(req *http.Request) (*http.Response, error) {
+		target = req.URL.String()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"data":[]}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}}
+	if _, err := h.ReadMaintenance(context.Background(), "usage", "qoder-cn"); err != nil {
+		t.Fatalf("filtered quota request failed: %v", err)
+	}
+	if target != "http://provider.local/usage?provider=qoder-cn" {
+		t.Errorf("unexpected quota endpoint: %s", target)
+	}
+	if _, err := h.ReadMaintenance(context.Background(), "usage", "not-a-provider"); err == nil {
+		t.Fatal("unknown provider quota filter was accepted")
+	}
+	if _, err := h.ReadMaintenance(context.Background(), "checkins", "zcode"); err == nil {
+		t.Fatal("unexpected check-in account filter was accepted")
+	}
+}
 
 func TestRecognizeProviderModel(t *testing.T) {
 	for _, model := range []string{

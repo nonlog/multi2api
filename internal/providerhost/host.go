@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,7 +44,7 @@ func Start(bun, worker, authFile string, autoCheckin ...bool) (*Host, error) {
 		bun = "bun"
 	}
 	if worker == "" {
-		worker = "/app/integrations/provider-host/worker.mjs"
+		worker = "./integrations/provider-host/worker.mjs"
 	}
 	if authFile == "" {
 		return nil, errors.New("providers.auth_file is required")
@@ -180,13 +181,20 @@ func (h *Host) Accounts(ctx context.Context) (map[string]any, error) {
 
 // ReadMaintenance exposes only the public quota/check-in summaries supplied
 // by the bundled plugin's original usage and checkin hooks.
-func (h *Host) ReadMaintenance(ctx context.Context, endpoint string) (map[string]any, error) {
+func (h *Host) ReadMaintenance(ctx context.Context, endpoint string, provider ...string) (map[string]any, error) {
 	if h == nil || (endpoint != "usage" && endpoint != "checkins") {
 		return nil, errors.New("provider runtime unavailable")
 	}
+	path := "http://provider.local/" + endpoint
+	if len(provider) > 0 && provider[0] != "" {
+		if endpoint != "usage" || !Recognizes(provider[0]) {
+			return nil, errors.New("invalid provider quota filter")
+		}
+		path += "?provider=" + url.QueryEscape(provider[0])
+	}
 	ctx, cancel := context.WithTimeout(ctx, 105*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", "http://provider.local/"+endpoint, nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", path, nil)
 	resp, err := h.client.Do(req)
 	if err != nil {
 		return nil, err

@@ -89,11 +89,11 @@ jobs:
           case "${{ matrix.goos }}" in
             windows)
               NAME="multi2api-v${V}-windows-amd64.zip"
-              zip -q "$NAME" multi2api.exe config.example.json README.md
+              zip -qr "$NAME" multi2api.exe config.example.json README.md LICENSE integrations
               ;;
             *)
               NAME="multi2api-v${V}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
-              tar czf "$NAME" multi2api config.example.json README.md
+              tar czf "$NAME" multi2api config.example.json README.md LICENSE integrations
               ;;
           esac
           echo "name=$NAME" >> "$GITHUB_ENV"
@@ -141,7 +141,7 @@ jobs:
           echo "prev=${PREV}" >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
         with:
-          name: ${{ github.ref_name }}-panel
+          name: ${{ github.ref_name }} - Multi2API
           prerelease: ${{ contains(github.ref_name, '-') }}
           body: |
             CI 自动构建发布（五平台二进制 + checksums）。

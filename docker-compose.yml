@@ -1,6 +1,8 @@
 services:
+  # Keep this service name: existing NewAPI channels resolve http://wb2api:7863.
   wb2api:
-    build: .
+    # Built and published by GitHub Actions. Never rebuild on the production VPS.
+    image: ghcr.io/nonlog/multi2api:latest
     container_name: workbuddy2api
     restart: unless-stopped
     # 容器默认以 app 用户（uid 10001）运行。宿主机挂载目录属主不同会导致

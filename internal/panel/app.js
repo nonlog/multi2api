@@ -1087,16 +1087,16 @@ async function loadProviderStatus() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const state = await res.json();
     if (!state.enabled) {
-      el.textContent = '内置 Provider 尚未启动。开启并保存后重启 WB2API，登录记录才会参与路由。';
+      el.textContent = '内置 Provider 尚未启动。开启并保存后重启 Multi2API，登录记录才会参与路由。';
       return;
     }
     const names = { zcode:'ZCode', qoder:'Qoder 国际', 'qoder-cn':'Qoder 国内',
       qwenwork:'千问办公', 'qwenwork-enterprise':'千问办公企业', codearts:'华为 CodeArts' };
     const rows = Object.entries(names).map(([id, name]) => {
       const count = Number(state.accounts?.[id]?.count || 0);
-      return name + '：' + count + ' 个凭据';
+      return name + '：已导入 ' + count + ' 份凭据';
     });
-    el.textContent = '内部插件运行中 · ' + rows.join('  /  ');
+    el.textContent = '内部插件运行中 · ' + rows.join('  /  ') + '。凭据已导入不代表登录仍有效，请以额度和签到结果为准。';
   } catch (e) {
     el.textContent = '无法获取内置 Provider 状态：' + e.message;
   }
@@ -1112,9 +1112,13 @@ const PROVIDER_NAMES = { zcode:'ZCode', qoder:'Qoder 国际', 'qoder-cn':'Qoder 
 async function loadProviderUsage() {
   const el = $('providerUsage');
   if (!el) return;
-  el.textContent = '正在查询 Provider 额度…';
+  const provider = $('providerQuotaFilter')?.value || '';
+  el.textContent = '正在查询' + (provider ? '所选' : '全部') + ' Provider 额度…';
+  const btn = $('btnProviderUsage');
+  if (btn) btn.disabled = true;
   try {
-    const res = await fetch('/v1/providers/usage', { headers: providerAuthHeaders() });
+    const url = '/v1/providers/usage' + (provider ? '?provider=' + encodeURIComponent(provider) : '');
+    const res = await fetch(url, { headers: providerAuthHeaders() });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const entries = data.data || [];
@@ -1122,7 +1126,7 @@ async function loadProviderUsage() {
     el.replaceChildren();
     for (const a of entries) {
       const section = document.createElement('div');
-      section.style.cssText = 'padding:10px 0;border-bottom:1px solid var(--line)';
+      section.style.cssText = 'padding:12px;border:1px solid var(--line);border-radius:12px;margin-top:10px';
       const header = document.createElement('div');
       header.style.fontWeight = '600';
       header.textContent = (PROVIDER_NAMES[a.provider] || a.provider) + ' · ' + (a.account || '');
@@ -1135,6 +1139,19 @@ async function loadProviderUsage() {
       el.appendChild(section);
     }
   } catch (e) { el.textContent = '额度查询失败：' + e.message; }
+  finally { if (btn) btn.disabled = false; }
+}
+const PROVIDER_CHECKIN_LABEL = {
+  claimed: '已领取', done: '已完成', failed: '失败', ineligible: '未满足签到条件',
+  unsupported: '不支持', not_run: '尚未执行', busy: '正在执行', skipped: '已跳过',
+};
+function providerCheckinDescription(provider, entry) {
+  const outcome = PROVIDER_CHECKIN_LABEL[entry.outcome] || entry.outcome || '未知';
+  let message = entry.message || '';
+  if (provider === 'qoder' && /sign-in has expired|status 401/i.test(message)) {
+    message = '登录已过期，请通过官方客户端重新授权并更新私有凭据';
+  }
+  return (entry.account || '') + '：' + outcome + (message ? '（' + message + '）' : '');
 }
 async function loadProviderCheckins() {
   const el = $('providerCheckins');
@@ -1152,7 +1169,7 @@ async function loadProviderCheckins() {
       if (!info.supported) summary.textContent = (PROVIDER_NAMES[info.provider] || info.provider) + '：不支持签到';
       else if (!info.accounts?.length) summary.textContent = (PROVIDER_NAMES[info.provider] || info.provider) + '：无账号';
       else summary.textContent = (PROVIDER_NAMES[info.provider] || info.provider) + '：' +
-        info.accounts.map(a => (a.account || '') + ' ' + (a.outcome || 'not_run')).join(' · ');
+        info.accounts.map(a => providerCheckinDescription(info.provider, a)).join(' · ');
       line.appendChild(summary);
       if (info.supported && info.accounts?.length) {
         const b = document.createElement('button');

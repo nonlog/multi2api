@@ -45,7 +45,7 @@
 
 ## 项目简介
 
-WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾讯 CodeBuddy（`copilot.tencent.com`）账号包装为统一的 `/v1/chat/completions` 服务。
+Multi2API 是一个自托管的 **OpenAI / Responses / Anthropic Messages 兼容网关**。它保留原 WorkBuddy2API 的腾讯 CodeBuddy（`copilot.tencent.com`）账号池，并可在**同一个进程、同一组 API 密钥与端口**下启用 ZCode、Qoder、千问办公和华为 CodeArts。
 
 - 官方不提供 OpenAI 形态的开放 API，本项目通过 **OAuth 设备授权**（面板「添加账号」或 `login.sh`）获取账号凭证，在网关侧做 token 自动刷新、账号池调度与流量治理；
 - 面向 **个人多账号** 场景：多账号共享、单号故障自动换号、冷却 / 熔断防止雪崩、会话粘性保证多轮上下文不跳号；
@@ -208,7 +208,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 WorkBuddy 当前的健康账号、余额、模型限流和会话粘性池选择 CN/Global，
 旧前缀仍兼容但不在公开列表重复展示。只有实际探测到的模型才会列出。
 
-还可在**现有 WorkBuddy2API 服务内部**启用 ZCode、Qoder（含国内版）、
+还可在**现有 Multi2API 服务内部**启用 ZCode、Qoder（含国内版）、
 千问办公 QwenWork、华为 CodeArts 插件。由 Go 服务统一鉴权和暴露
 `/v1/*` 接口，内部 Bun 插件宿主仅通过私有 Unix socket 工作，
 无需安装或运行独立 Magpie 网关。第三方协议实现来自
@@ -223,7 +223,7 @@ WorkBuddy 当前的健康账号、余额、模型限流和会话粘性池选择 
 flowchart LR
     Client["客户端 / SDK\nOpenAI 兼容请求"] --> H
 
-    subgraph GWI["WorkBuddy2API 网关 :7863"]
+    subgraph GWI["Multi2API 网关 :7863"]
         H["HTTP Handler\n鉴权 · 请求体上限 · 提示词改写 · 轮转"] --> P
         H --> S
         P["账号池\n快过期加权 · 成本分层 · 熔断 · 冷却 · 租约"] --> U
@@ -285,8 +285,9 @@ cd multi2api
 cp config.example.json config.json
 #    建议编辑 config.json 设置 api_key（或留空由程序自动生成随机密钥）
 
-# 3. 启动（首次会构建镜像，约 1-2 分钟）
-docker compose up -d --build
+# 3. 从 GHCR 拉取 GitHub Actions 构建的镜像（不在服务器本地编译）
+docker compose pull
+docker compose up -d
 
 # 4. 健康检查（无可用账号时返回 503）
 curl -s http://localhost:7863/healthz
@@ -306,17 +307,17 @@ docker compose down             # 停止并移除容器（数据在 ./auths 与 
 ### 方式二：Windows 单文件运行（无需 Docker）
 
 ```powershell
-# 1) 下载 Release 中的 wb2api.exe，或从源码构建
-go build -trimpath -ldflags="-s -w" -o wb2api.exe ./cmd/server
+# 1) 下载 Release 中的 multi2api.exe，或从源码构建
+go build -trimpath -ldflags="-s -w" -o multi2api.exe ./cmd/server
 
 # 2) 直接运行：首次启动自动生成 config.json（含随机 api_key，日志打印一次）
-.\wb2api.exe -config config.json
+.\multi2api.exe -config config.json
 
 # 3) 浏览器打开面板添加账号
 #    http://127.0.0.1:7863/panel/
 ```
 
-exe 为**单文件自包含**（前端资源已 embed 进二进制），拷到任意 Windows 机器即可运行，只需保证 `auths/`（凭证）与 `data/`（状态）目录可写。
+exe 对**原生 WorkBuddy 功能**仍是单文件自包含（前端资源已 embed 进二进制），只需保证 `auths/`（凭证）与 `data/`（状态）目录可写。启用其他 Provider 时，另需 Bun 运行环境、Release 附带的 `integrations/` 目录及对应私有凭据文件；完整多 Provider 部署优先使用 Docker 镜像（其中已包含 Bun 和插件文件）。
 
 ### 方式三：源码运行（开发调试）
 
@@ -330,7 +331,7 @@ go run ./cmd/server -config config.json
 构建全部二进制：
 
 ```bash
-CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o wb2api ./cmd/server
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o multi2api ./cmd/server
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o signin_bin ./cmd/signin
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o login ./cmd/login
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o credit ./cmd/credit

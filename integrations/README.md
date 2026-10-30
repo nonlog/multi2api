@@ -1,6 +1,6 @@
-# WorkBuddy2API built-in Providers
+# Multi2API built-in Providers
 
-This directory belongs to the existing **WorkBuddy2API** process and Docker
+This directory belongs to the existing **Multi2API** process and Docker
 image. It is **not** another public 2API gateway, separate Docker service, or
 Magpie dependency. Go supervises a Bun subprocess listening exclusively on an
 owner-private Unix socket. The same existing API key protects every HTTP
@@ -18,13 +18,13 @@ at commit `2e580cfead8c5fe10add40d749a29a07803f745d`.
 | `magpie-plugins/codearts/` | `@magpie-community/opencode-codearts-auth` | 0.2.6 | MIT, see bundled `LICENSE` |
 
 Vendored packages are verbatim. Their copyrights and authorship remain with
-their upstream owners. WorkBuddy2API's `provider-host/bridge.mjs` adapts their
+their upstream owners. Multi2API's `provider-host/bridge.mjs` adapts their
 native protocols; it is separate code and does not replace their algorithms.
 
 ## Configuration
 
 Set `providers.enabled=true` and `providers.auth_file=./data/provider-auth.json`
-in the existing WorkBuddy2API `config.json`. The optional Bun runtime is
+in the existing Multi2API `config.json`. The optional Bun runtime is
 bundled in the **same** production image, and no provider worker starts when
 the feature is disabled. On non-Docker hosts the user must install Bun.
 
@@ -32,7 +32,7 @@ The credential JSON uses the Magpie `plugin-auth.json` account-key layout:
 `zcode`, `qoder`, `qoder-cn`, `qwenwork`, `codearts`, plus optional
 per-account `provider#id` entries. Copy **only those providers' credential
 entries**, not credentials belonging to other services, to the dedicated
-WorkBuddy2API file. Permissions **0600**, stored in the existing private
+Multi2API file. Permissions **0600**, stored in the existing private
 data volume and excluded from Git/Docker build context.
 
 All original Magpie **quota queries and sign-in/check-in hooks** are retained:
@@ -51,6 +51,14 @@ each supported account at most once per Beijing calendar day, keeps state in
 `data/provider-maintenance.json` and never forges missing Qoder device
 identity. If the official Qoder CLI/runtime is absent on Linux, its check-in
 returns an explanatory `ineligible` result rather than a fake success.
+
+An imported credential is **not** evidence that a vendor login is still valid.
+If Qoder reports HTTP 401 / `sign-in has expired`, reauthenticate through the
+official Qoder client, then update the dedicated credential copy and restart
+the Multi2API service. Do not copy an older Magpie token over a newer one or
+manufacture a device identity. The panel lists check-in failure reasons and
+allows querying one provider's quota at a time; the corresponding authenticated
+API is `GET /v1/providers/usage?provider=qoder` (omit the filter for all).
 
 The plugin worker may refresh credentials and atomically rewrite this private
 copy; it does not write to Magpie's original store. Never point both services
