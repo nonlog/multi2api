@@ -132,10 +132,11 @@ type Config struct {
 	// The optional plugin runtime is supervised by WorkBuddy2API itself,
 	// reachable only through a private Unix socket inside the same container.
 	Providers struct {
-		Enabled  bool   `json:"enabled"`
-		AuthFile string `json:"auth_file"`
-		Worker   string `json:"worker"`
-		Bun      string `json:"bun"`
+		Enabled     bool   `json:"enabled"`
+		AuthFile    string `json:"auth_file"`
+		Worker      string `json:"worker"`
+		Bun         string `json:"bun"`
+		AutoCheckin bool   `json:"auto_checkin"`
 	} `json:"providers"`
 
 	Upstream struct {

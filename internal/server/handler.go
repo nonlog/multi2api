@@ -154,6 +154,9 @@ func NewHandler(cfg Config) *Handler {
 	h.mux.HandleFunc("POST /messages", h.withAnthropicAuth(h.messages))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /v1/providers", h.withAuth(h.providerAccounts))
+	h.mux.HandleFunc("GET /v1/providers/usage", h.withAuth(h.providerUsage))
+	h.mux.HandleFunc("GET /v1/providers/checkins", h.withAuth(h.providerCheckins))
+	h.mux.HandleFunc("POST /v1/providers/checkin", h.withAuth(h.providerCheckin))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)
 	if cfg.Panel != nil {
@@ -314,6 +317,53 @@ func (h *Handler) providerAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "accounts": accounts})
+}
+
+func (h *Handler) providerUsage(w http.ResponseWriter, r *http.Request) {
+	h.providerMaintenance(w, r, "usage")
+}
+
+func (h *Handler) providerCheckins(w http.ResponseWriter, r *http.Request) {
+	h.providerMaintenance(w, r, "checkins")
+}
+
+func (h *Handler) providerMaintenance(w http.ResponseWriter, r *http.Request, kind string) {
+	if h.cfg.ProviderHost == nil {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "provider_disabled", "integrated providers are not enabled")
+		return
+	}
+	result, err := h.cfg.ProviderHost.ReadMaintenance(r.Context(), kind)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "provider_unavailable", "provider maintenance service unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) providerCheckin(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.ProviderHost == nil {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "provider_disabled", "integrated providers are not enabled")
+		return
+	}
+	var input struct {
+		Provider string `json:"provider"`
+		Account  string `json:"account"`
+		Force    bool   `json:"force"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&input); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "invalid provider check-in request")
+		return
+	}
+	if !providerhost.Recognizes(input.Provider) {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_provider", "unknown provider")
+		return
+	}
+	result, err := h.cfg.ProviderHost.Checkin(r.Context(), input.Provider, input.Account, input.Force)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "checkin_failed", "provider check-in request failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // fmtCreditsPrefix 从上游 credits 原文提取倍率并格式化为 "[x0.05 credit]"。

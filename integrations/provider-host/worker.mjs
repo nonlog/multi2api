@@ -3,6 +3,7 @@
 // second public API, no separate deployment. Its plugins come from the
 // pinned magpie-community MIT reference in ../magpie-plugins/.
 import { readFile, rename, writeFile } from "node:fs/promises"
+import { dirname, join } from "node:path"
 import { ZCodeAuthPlugin } from "../magpie-plugins/zcode/index.mjs"
 import {
   QoderAuthPlugin, QoderCNAuthPlugin, QwenWorkAuthPlugin,
@@ -13,6 +14,8 @@ import { chatToAnthropic, anthroResultToChat, anthroStreamToChat } from "./bridg
 
 const SOCKET = process.env.WB2API_PROVIDER_SOCKET
 const AUTH_FILE = process.env.WB2API_PROVIDER_AUTH_FILE
+const MAINTENANCE_FILE = process.env.WB2API_PROVIDER_MAINTENANCE_FILE || join(dirname(AUTH_FILE || "."), "provider-maintenance.json")
+const AUTO_CHECKIN = process.env.WB2API_PROVIDER_AUTO_CHECKIN === "true"
 const PROVIDERS = Object.freeze({
   zcode: ZCodeAuthPlugin,
   qoder: QoderAuthPlugin,
@@ -29,6 +32,12 @@ const responses = (status, value) =>
 
 let credentials = {}
 let writing = Promise.resolve()
+let maintenance = { checkins: {} }
+let maintenanceWriting = Promise.resolve()
+const maintenanceBusy = new Set()
+let maintenanceTimer
+let autoCheckinRunning = false
+const usageCache = new Map()
 const pluginInstances = new Map()
 const modelCache = new Map()
 const roundRobin = new Map()
@@ -66,6 +75,141 @@ async function saveAuth(key, next) {
     modelCache.clear()
   })
   await writing
+}
+
+// Vendor check-ins are day-scoped. Use the vendor-facing Beijing calendar
+// day, never a server-local time zone, and retain attempts across restarts.
+function calendarDay(now = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(now)
+}
+
+function publicUsage(data) {
+  const out = {}
+  for (const k of ["plan", "until", "user", "signIn", "error"]) {
+    if (typeof data?.[k] === "string") out[k] = data[k].slice(0, 240)
+  }
+  out.windows = Array.isArray(data?.windows)
+    ? data.windows.slice(0, 24).map(w => ({
+      name: String(w?.name || "Allowance").slice(0, 120),
+      ...(Number.isFinite(w?.used) ? { used: Math.max(0, Math.min(100, w.used)) } : {}),
+      ...(typeof w?.display === "string" ? { display: w.display.slice(0, 200) } : {}),
+      ...(typeof w?.until === "string" ? { until: w.until.slice(0, 48) } : {}),
+      ...(w?.aside ? { aside: true } : {}),
+    }))
+    : []
+  return out
+}
+
+async function recordCheckin(key, result) {
+  const entry = {
+    day: calendarDay(),
+    at: new Date().toISOString(),
+    outcome: String(result?.outcome || "failed").slice(0, 36),
+    message: String(result?.message || "").slice(0, 200),
+    ...(Number.isFinite(result?.credit) ? { credit: result.credit } : {}),
+    ...(typeof result?.until === "string" ? { until: result.until.slice(0, 48) } : {}),
+  }
+  maintenanceWriting = maintenanceWriting.catch(() => {}).then(async () => {
+    maintenance.checkins[key] = entry
+    const tmp = MAINTENANCE_FILE + ".tmp-" + process.pid
+    await writeFile(tmp, JSON.stringify(maintenance, null, 2) + "\n", { mode: 0o600 })
+    await rename(tmp, MAINTENANCE_FILE)
+  })
+  await maintenanceWriting
+  return entry
+}
+
+function maintenanceEligible(id) {
+  // QwenWork's upstream plugin deliberately implements NO check-in; do not
+  // invent a claim endpoint or report success.
+  return id === "zcode" || id === "qoder" || id === "qoder-cn" || id === "codearts"
+}
+
+async function checkinAccount(id, key, { force = false } = {}) {
+  const today = calendarDay()
+  if (!maintenanceEligible(id)) return { outcome: "unsupported", message: "upstream plugin does not support check-in" }
+  const existing = maintenance.checkins[key]
+  if (!force && existing?.day === today) return { ...existing, cached: true }
+  if (maintenanceBusy.has(key)) return { outcome: "busy", message: "check-in already in progress" }
+  maintenanceBusy.add(key)
+  try {
+    const { plugin } = await configuredPlugin(id, key)
+    if (typeof plugin.auth?.checkin !== "function") return { outcome: "unsupported" }
+    let result
+    try { result = await plugin.auth.checkin(async () => credentials[key]) }
+    catch { result = { outcome: "failed", message: "provider check-in request failed" } }
+    return await recordCheckin(key, result)
+  } finally {
+    maintenanceBusy.delete(key)
+  }
+}
+
+async function autoCheckin() {
+  if (!AUTO_CHECKIN || autoCheckinRunning) return
+  autoCheckinRunning = true
+  try {
+    const entries = Object.keys(PROVIDERS)
+      .filter(maintenanceEligible)
+      .flatMap(id => providerKeys(id).map(key => ({ id, key })))
+    for (const { id, key } of entries) {
+      if (maintenance.checkins[key]?.day === calendarDay()) continue
+      try { await checkinAccount(id, key) } catch {}
+    }
+  } finally {
+    autoCheckinRunning = false
+  }
+}
+
+async function handleUsage(url) {
+  const requested = url.searchParams.get("provider")
+  const ids = requested ? [requested] : Object.keys(PROVIDERS)
+  if (ids.some(id => !PROVIDERS[id])) return responses(400, { error: "unknown provider" })
+  const result = []
+  for (const id of ids) {
+    for (const key of providerKeys(id)) {
+      const cacheKey = id + "\0" + key
+      const cached = usageCache.get(cacheKey)
+      if (cached && Date.now() - cached.at < 180_000) {
+        result.push({ provider: id, account: key, ...cached.value, cached: true })
+        continue
+      }
+      let value
+      try {
+        const { plugin, provider } = await configuredPlugin(id, key)
+        if (typeof plugin.auth?.usage !== "function") value = { error: "usage query unsupported", windows: [] }
+        else {
+          const read = await Promise.race([
+            plugin.auth.usage(async () => credentials[key], provider),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("quota request timeout")), 30_000)),
+          ])
+          value = publicUsage(read)
+        }
+      } catch { value = { error: "provider usage request failed", windows: [] } }
+      usageCache.set(cacheKey, { value, at: Date.now() })
+      result.push({ provider: id, account: key, ...value })
+    }
+  }
+  return responses(200, { data: result })
+}
+
+async function handleCheckin(req) {
+  let input
+  try { input = await req.json() }
+  catch { return responses(400, { error: "invalid JSON" }) }
+  const provider = String(input?.provider || "")
+  if (!PROVIDERS[provider]) return responses(400, { error: "unknown provider" })
+  const requestedAccount = String(input?.account || "")
+  const keys = providerKeys(provider)
+  if (requestedAccount && !keys.includes(requestedAccount))
+    return responses(404, { error: "account not found" })
+  const results = []
+  for (const key of requestedAccount ? [requestedAccount] : keys) {
+    const value = await checkinAccount(provider, key, { force: input?.force === true })
+    results.push({ provider, account: key, ...value })
+  }
+  return responses(200, { data: results })
 }
 
 function runtimeClient(accountKey) {
@@ -186,11 +330,25 @@ async function handleChat(req, id) {
 }
 
 async function dispatch(req) {
-  const path = new URL(req.url).pathname
+  const url = new URL(req.url)
+  const path = url.pathname
   if (req.method === "GET" && path === "/health") {
     return responses(200, { ready: true, providers: Object.keys(PROVIDERS), credential_count: Object.keys(credentials).length })
   }
   if (req.method === "GET" && path === "/models") return handleModels()
+  if (req.method === "GET" && path === "/usage") return handleUsage(url)
+  if (req.method === "GET" && path === "/checkins") {
+    return responses(200, {
+      auto_checkin: AUTO_CHECKIN,
+      data: Object.keys(PROVIDERS).map(id => ({
+        provider: id, supported: maintenanceEligible(id),
+        accounts: providerKeys(id).map(key => ({
+          account: key, ...(maintenance.checkins[key] || { outcome: "not_run" }),
+        })),
+      })),
+    })
+  }
+  if (req.method === "POST" && path === "/checkin") return handleCheckin(req)
   if (req.method === "GET" && path === "/accounts") {
     return responses(200, Object.fromEntries(Object.keys(PROVIDERS)
       .map(id => [id, { count: providerKeys(id).length, ready: providerKeys(id).length > 0 }])))
@@ -212,6 +370,14 @@ export async function start() {
     if (err.code !== "ENOENT") throw err
     credentials = {}
   }
+  try {
+    maintenance = JSON.parse(await readFile(MAINTENANCE_FILE, "utf8"))
+    if (!maintenance || !maintenance.checkins || typeof maintenance.checkins !== "object")
+      throw new Error("invalid check-in state")
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err
+    maintenance = { checkins: {} }
+  }
   const server = Bun.serve({
     unix: SOCKET,
     async fetch(req) {
@@ -224,6 +390,14 @@ export async function start() {
     },
   })
   process.on("SIGTERM", () => server.stop(true))
+  if (AUTO_CHECKIN) {
+    // One attempt per vendor-facing day and account, persisted to disk.
+    // No background usage polling: balances are only queried on demand.
+    maintenanceTimer = setInterval(() => { void autoCheckin() }, 15 * 60 * 1000)
+    maintenanceTimer.unref?.()
+    // A delayed first tick avoids colliding with startup and simultaneous
+    // Magpie credential migration; the first 15m tick does the check-in.
+  }
   return server
 }
 

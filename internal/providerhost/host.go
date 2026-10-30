@@ -38,7 +38,7 @@ type Host struct {
 	once   sync.Once
 }
 
-func Start(bun, worker, authFile string) (*Host, error) {
+func Start(bun, worker, authFile string, autoCheckin ...bool) (*Host, error) {
 	if bun == "" {
 		bun = "bun"
 	}
@@ -69,7 +69,8 @@ func Start(bun, worker, authFile string) (*Host, error) {
 	cmd := exec.CommandContext(ctx, bun, worker)
 	cmd.Env = append(os.Environ(),
 		"WB2API_PROVIDER_SOCKET="+socket,
-		"WB2API_PROVIDER_AUTH_FILE="+authFile)
+		"WB2API_PROVIDER_AUTH_FILE="+authFile,
+		"WB2API_PROVIDER_AUTO_CHECKIN="+fmt.Sprint(len(autoCheckin) > 0 && autoCheckin[0]))
 	// Plugin diagnostics can contain upstream-issued tokens. Do not expose
 	// their stdout/stderr in the gateway logs or to downstream API callers.
 	cmd.Stdout = io.Discard
@@ -175,6 +176,56 @@ func (h *Host) Accounts(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// ReadMaintenance exposes only the public quota/check-in summaries supplied
+// by the bundled plugin's original usage and checkin hooks.
+func (h *Host) ReadMaintenance(ctx context.Context, endpoint string) (map[string]any, error) {
+	if h == nil || (endpoint != "usage" && endpoint != "checkins") {
+		return nil, errors.New("provider runtime unavailable")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 105*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", "http://provider.local/"+endpoint, nil)
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("provider maintenance request status %d", resp.StatusCode)
+	}
+	var data map[string]any
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 256<<10)).Decode(&data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (h *Host) Checkin(ctx context.Context, provider, account string, force bool) (map[string]any, error) {
+	if h == nil || !Recognizes(provider) {
+		return nil, errors.New("invalid provider")
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"provider": provider, "account": account, "force": force,
+	})
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "POST", "http://provider.local/checkin", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var data map[string]any
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 256<<10)).Decode(&data); err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("provider check-in rejected (HTTP %d)", resp.StatusCode)
+	}
+	return data, nil
 }
 
 func (h *Host) ProxyChat(w http.ResponseWriter, r *http.Request, body []byte, provider, bare string) {

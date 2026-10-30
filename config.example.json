@@ -51,6 +51,7 @@
   },
   "providers": {
     "enabled": false,
+    "auto_checkin": false,
     "auth_file": "./data/provider-auth.json",
     "worker": "/app/integrations/provider-host/worker.mjs",
     "bun": "bun"

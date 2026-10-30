@@ -992,6 +992,7 @@ const CFG_MAP = {
   session_sticky_enabled: ['session_sticky', 'enabled'],
   request_client_info: ['logging', 'request_client_info'],
   providers_enabled: ['providers', 'enabled'],
+  providers_auto_checkin: ['providers', 'auto_checkin'],
   providers_auth_file: ['providers', 'auth_file'],
   model_aliases_json: ['model_mapping', 'aliases'],
 };
@@ -1101,6 +1102,81 @@ async function loadProviderStatus() {
   }
 }
 if ($('btnProviderStatus')) $('btnProviderStatus').onclick = loadProviderStatus;
+
+function providerAuthHeaders() {
+  const key = localStorage.getItem(LS_KEY);
+  return key ? { Authorization: 'Bearer ' + key } : {};
+}
+const PROVIDER_NAMES = { zcode:'ZCode', qoder:'Qoder 国际', 'qoder-cn':'Qoder 国内',
+  qwenwork:'千问办公', 'qwenwork-enterprise':'千问办公企业', codearts:'华为 CodeArts' };
+async function loadProviderUsage() {
+  const el = $('providerUsage');
+  if (!el) return;
+  el.textContent = '正在查询 Provider 额度…';
+  try {
+    const res = await fetch('/v1/providers/usage', { headers: providerAuthHeaders() });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const entries = data.data || [];
+    if (!entries.length) { el.textContent = '尚无已导入的 Provider 账号'; return; }
+    el.replaceChildren();
+    for (const a of entries) {
+      const section = document.createElement('div');
+      section.style.cssText = 'padding:10px 0;border-bottom:1px solid var(--line)';
+      const header = document.createElement('div');
+      header.style.fontWeight = '600';
+      header.textContent = (PROVIDER_NAMES[a.provider] || a.provider) + ' · ' + (a.account || '');
+      section.appendChild(header);
+      const details = document.createElement('div');
+      const quotas = (a.windows || []).map(w => w.name + '：' +
+        (w.display || (Number.isFinite(w.used) ? Math.round(w.used) + '% 已用' : '—'))).join('  /  ');
+      details.textContent = a.error || [a.plan || '', quotas || '没有额度数据'].filter(Boolean).join(' · ');
+      section.appendChild(details);
+      el.appendChild(section);
+    }
+  } catch (e) { el.textContent = '额度查询失败：' + e.message; }
+}
+async function loadProviderCheckins() {
+  const el = $('providerCheckins');
+  if (!el) return;
+  el.textContent = '正在查询签到状态…';
+  try {
+    const res = await fetch('/v1/providers/checkins', { headers: providerAuthHeaders() });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    el.replaceChildren();
+    for (const info of data.data || []) {
+      const line = document.createElement('div');
+      line.style.cssText = 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--line)';
+      const summary = document.createElement('span');
+      if (!info.supported) summary.textContent = (PROVIDER_NAMES[info.provider] || info.provider) + '：不支持签到';
+      else if (!info.accounts?.length) summary.textContent = (PROVIDER_NAMES[info.provider] || info.provider) + '：无账号';
+      else summary.textContent = (PROVIDER_NAMES[info.provider] || info.provider) + '：' +
+        info.accounts.map(a => (a.account || '') + ' ' + (a.outcome || 'not_run')).join(' · ');
+      line.appendChild(summary);
+      if (info.supported && info.accounts?.length) {
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'xs'; b.textContent = '立即签到';
+        b.onclick = async () => {
+          b.disabled = true; b.textContent = '签到中…';
+          try {
+            const res = await fetch('/v1/providers/checkin', {
+              method: 'POST', headers: { ...providerAuthHeaders(), 'Content-Type': 'application/json' },
+              body: JSON.stringify({ provider: info.provider }),
+            });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            await loadProviderCheckins();
+          } catch (e) { toast('签到失败：' + e.message, 'err'); }
+          finally { b.disabled = false; b.textContent = '立即签到'; }
+        };
+        line.appendChild(b);
+      }
+      el.appendChild(line);
+    }
+  } catch (e) { el.textContent = '签到状态查询失败：' + e.message; }
+}
+if ($('btnProviderUsage')) $('btnProviderUsage').onclick = loadProviderUsage;
+if ($('btnProviderCheckins')) $('btnProviderCheckins').onclick = loadProviderCheckins;
 /* Go 时长字段即时校验：空 = 沿用现值（collectConfig 跳过发送）；非空必须是
    ParseDuration 语法（30m / 2h / 600s / 1h30m，可组合可带小数）。与后端
    config.go normalize() 的 time.ParseDuration 同口径，脏值在前端就地标红，

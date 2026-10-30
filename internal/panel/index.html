@@ -1104,12 +1104,23 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
               <span class="lb">启用内置 Provider（ZCode / Qoder / 千问办公 / CodeArts）</span>
               <input type="checkbox" name="providers_enabled">
             </div>
+            <div class="switch">
+              <span class="lb">每日自动签到 <span class="hint">ZCode、Qoder、CodeArts；千问办公不支持</span></span>
+              <input type="checkbox" name="providers_auto_checkin">
+            </div>
             <label class="fld">
               <span class="lb">Provider 凭据文件</span>
               <input name="providers_auth_file" placeholder="./data/provider-auth.json" autocomplete="off">
               <span class="hint">只读取 WB2API 的私有凭据副本，不修改 Magpie 原始数据；启用与文件路径更改均需重启。</span>
             </label>
             <div id="providerStatus" class="hint" role="status" aria-live="polite">正在读取 Provider 状态…</div>
+            <div class="row" style="gap:8px; flex-wrap:wrap; margin-top:12px">
+              <button type="button" class="xs" id="btnProviderUsage">查询全部额度</button>
+              <button type="button" class="xs" id="btnProviderCheckins">查看签到状态</button>
+              <span class="hint">刷新额度不发起模型对话；手动签到会提交领取请求。</span>
+            </div>
+            <div id="providerUsage" class="hint" role="status" aria-live="polite"></div>
+            <div id="providerCheckins" class="hint" role="status" aria-live="polite"></div>
           </div>
         </div>
 

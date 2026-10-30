@@ -27,6 +27,22 @@ test("all real bundled plugins initialize behind the same private Unix socket", 
       unix: socket, method: "POST", body: "{}",
     })
     expect(unknown.status).toBe(404)
+    const usage = await fetch("http://localhost/usage", { unix: socket })
+    expect(usage.status).toBe(200)
+    expect((await usage.json()).data).toEqual([])
+    const checkins = await fetch("http://localhost/checkins", { unix: socket })
+    expect(checkins.status).toBe(200)
+    const state = await checkins.json()
+    expect(state.auto_checkin).toBe(false)
+    expect(state.data.find(x => x.provider === "qwenwork").supported).toBe(false)
+    expect(state.data.find(x => x.provider === "qoder").supported).toBe(true)
+    const claim = await fetch("http://localhost/checkin", {
+      unix: socket, method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "qwenwork" }),
+    })
+    expect(claim.status).toBe(200)
+    expect((await claim.json()).data).toEqual([])
   } finally {
     server?.stop(true)
     await rm(dir, { recursive: true, force: true })

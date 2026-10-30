@@ -35,6 +35,23 @@ entries**, not credentials belonging to other services, to the dedicated
 WorkBuddy2API file. Permissions **0600**, stored in the existing private
 data volume and excluded from Git/Docker build context.
 
+All original Magpie **quota queries and sign-in/check-in hooks** are retained:
+
+| Provider | Quota usage | Daily check-in |
+| --- | --- | --- |
+| ZCode | Coding Plan, free gift plans and team allowances | Gift plans, when signed in with a compatible ZCode session |
+| Qoder / Qoder CN | Credit and add-on usage | Yes, **only with the authentic device identity supplied by the official client runtime** |
+| QwenWork / QwenWork Enterprise | Account-context / wallet credits | Not supported by upstream plugin; displayed as unsupported |
+| CodeArts | Plan usage, benefits and batch credits | Yes, with its upstream credential/signing mechanism |
+
+The admin panel can query balances on demand, inspect daily results and run
+manual check-in. Automatic daily check-in is **off until
+`providers.auto_checkin=true`**; when enabled, the private worker attempts
+each supported account at most once per Beijing calendar day, keeps state in
+`data/provider-maintenance.json` and never forges missing Qoder device
+identity. If the official Qoder CLI/runtime is absent on Linux, its check-in
+returns an explanatory `ineligible` result rather than a fake success.
+
 The plugin worker may refresh credentials and atomically rewrite this private
 copy; it does not write to Magpie's original store. Never point both services
 at a single mutable token store. All per-account refreshes continue to use
