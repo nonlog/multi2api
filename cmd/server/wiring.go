@@ -17,8 +17,14 @@ import (
 // 返回列表可能对快过期账号重复同一 UID，作为虚拟实例权重；会话哈希分配无需感知
 // 权重细节，已有绑定的快路径仍直接返回原账号，不做迁移。
 func realmAwareAvailableForModel(p *pool.Pool) func(model string) []string {
+	return realmAwareAvailableForModelWithAliases(p, nil)
+}
+
+// Aliases only change the realm choice for a mapped bare name. Explicit
+// cn:/global: names remain pinned for older callers and diagnostics.
+func realmAwareAvailableForModelWithAliases(p *pool.Pool, aliases map[string][]string) func(model string) []string {
 	return func(model string) []string {
-		realm, bare := server.ResolveModel(model)
+		realm, bare := server.ResolveMappedModel(model, aliases)
 		return p.WeightedAvailableUIDsForModelRealm(bare, realm)
 	}
 }

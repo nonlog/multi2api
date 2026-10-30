@@ -41,6 +41,14 @@
     "chat_base": "",
     "billing_base": ""
   },
+  "model_mapping": {
+    "aliases": {
+      "deepseek-v4.1-flash": [
+        "cn:deepseek-v4.1-flash",
+        "global:deepseek-v4.1-flash"
+      ]
+    }
+  },
   "upstream": {
     "timeout_seconds": 120,
     "header_timeout_seconds": 120,

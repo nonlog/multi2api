@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/server"
 )
 
 // Config 顶层配置。
@@ -120,6 +121,13 @@ type Config struct {
 		ChatBase    string `json:"chat_base"`
 		BillingBase string `json:"billing_base"`
 	} `json:"global"`
+
+	// ModelMapping collapses multiple WorkBuddy regional model IDs into one
+	// downstream name, while the existing account pool chooses the realm.
+	// An alias points to one or both realm-qualified IDs of the SAME model.
+	ModelMapping struct {
+		Aliases map[string][]string `json:"aliases"`
+	} `json:"model_mapping"`
 
 	Upstream struct {
 		// TimeoutSeconds 短 RPC（refresh/checkin/balance/FetchModels）总时长上限，默认 120。
@@ -319,6 +327,9 @@ func Load(path string) (*Config, error) {
 	if err := c.normalize(); err != nil {
 		return nil, err
 	}
+	if err := server.ValidateModelAliases(c.ModelMapping.Aliases); err != nil {
+		return nil, err
+	}
 	return c, nil
 }
 
@@ -329,6 +340,9 @@ func ParseConfigInto(raw []byte, c *Config) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	if err := c.normalize(); err != nil {
+		return nil, err
+	}
+	if err := server.ValidateModelAliases(c.ModelMapping.Aliases); err != nil {
 		return nil, err
 	}
 	return c, nil

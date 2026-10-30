@@ -62,6 +62,10 @@ type Config struct {
 	// （modelList 不列 global 名单）。
 	GlobalEnabled bool
 
+	// ModelAliases provides downstream-id -> []realm-qualified upstream ids.
+	// When both cn and global are configured, normal pool selection spans both.
+	ModelAliases map[string][]string
+
 	// Usage 逐请求用量记录器（可选；nil = 不记录）。
 	// 在 recordAttempt 这一唯一汇聚点调用，因此流式/非流式、成功/失败都会计入，
 	// 且与 pool 的每账号累计器同源，两条口径不会漂移。
@@ -439,7 +443,7 @@ func (h *Handler) modelList() []map[string]any {
 			out = append(out, entry)
 		}
 	}
-	return out
+	return mapModelListing(out, h.cfg.ModelAliases)
 }
 
 // fetchGlobalModels 返回 global 模型名单（纯动态探测结果）及被探测账号。
@@ -546,7 +550,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// realm 前缀解析（D6）：model 名可能带 "[realm:]" 前缀。剥出 realm + bareModel，
 	// bareModel 用于选号/粘性/出站 body 重写（前缀是网关侧路由协议，上游只认裸名）。
 	// 裸名 → ("cn", 原串)，CN 现状零回归。
-	realm, bareModel := resolveModel(peek.Model)
+	realm, bareModel := ResolveMappedModel(peek.Model, h.cfg.ModelAliases)
 	modelRate := ""
 	if h.cfg.Upstream != nil {
 		modelRate = h.cfg.Upstream.ModelRate(realm, bareModel)
@@ -776,6 +780,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 在这里取一次快照，供下方错误构造区分（issue #102 附带发现 1）。
 			modelBlock = h.cfg.Pool.ModelBlocked(bareModel)
 			break
+		}
+		// When an alias is served by either realm, account choice determines the
+		// upstream pricing basis; an empty aggregate realm must never be used
+		// for per-realm billing and credit-floor calculations.
+		if h.cfg.Upstream != nil {
+			modelRate = h.cfg.Upstream.ModelRate(acct.Realm(), bareModel)
 		}
 		st.uid = acct.UID
 		// 同步昵称：请求流水行只写 uid8 时无法直观看是哪一号，昵称随本次选号带入日志行。
