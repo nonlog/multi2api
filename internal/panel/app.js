@@ -903,7 +903,9 @@ function mdRowHtml(m, pr) {
   const eff = (m.supported_efforts || []).slice();
   if (m.can_disable_thinking && eff.length && !eff.includes('off')) eff.push('off（可关）');
   const effs = eff.length ? eff.map(e => '<span class="tag warn">' + esc(e) + '</span>').join(' ')
-    : '<span style="color:var(--ink-3);font-size:12.5px">' + (m.supports_reasoning ? '固定档 · 默认 ' + esc(m.default_effort || '?') : '不支持思考') + '</span>';
+    : '<span style="color:var(--ink-3);font-size:12.5px">' +
+      (m.supports_reasoning == null ? '档位信息未提供' :
+        m.supports_reasoning ? '固定档 · 默认 ' + esc(m.default_effort || '?') : '不支持思考') + '</span>';
   // 能力徽标：默认模型 / 工具调用 / 视觉 / 纯推理（上游目录全字段透出，缺失不显示）
   const caps = [];
   if (m.is_default) caps.push('<span class="tag ok">默认</span>');
@@ -1539,9 +1541,12 @@ function renderProviderLoginInputs() {
   }
 }
 $('providerLoginMethod').onchange = renderProviderLoginInputs;
-$('addProvider').onchange = () => { stopPoll(); loginState = null; refreshProviderAdd(); };
+$('addProvider').onchange = () => {
+  stopPoll(); loginState = null; pvLoginProvider = ''; refreshProviderAdd();
+};
 function startAddLogin() {
   if ($('addProvider').value !== 'workbuddy') { startProviderLogin(); return; }
+  pvLoginProvider = '';
   const realm = (document.querySelector('input[name="addRealm"]:checked') || {}).value || 'cn';
   $('btnStartLogin').disabled = true;
   $('addLoad').hidden = false; $('addErr').hidden = true;
