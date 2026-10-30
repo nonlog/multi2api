@@ -991,6 +991,8 @@ const CFG_MAP = {
   sanitize_blacklist_fingerprints: ['features', 'sanitize_blacklist_fingerprints'],
   session_sticky_enabled: ['session_sticky', 'enabled'],
   request_client_info: ['logging', 'request_client_info'],
+  providers_enabled: ['providers', 'enabled'],
+  providers_auth_file: ['providers', 'auth_file'],
 };
 /* 「覆盖型」文本字段：空串本身是有意义的取值（= 回落到内置默认），必须照发。
  *
@@ -1026,6 +1028,9 @@ async function loadConfig() {
       else if (Array.isArray(v)) el.value = v.join(', ');
       else el.value = v == null ? '' : v;
     }
+    $('cfgModelAliases').value = JSON.stringify(dig(cfgLoaded, ['model_mapping', 'aliases']) || {}, null, 2);
+    $('cfgModelAliases').classList.remove('invalid');
+    loadProviderStatus();
     markDurationFields(); // 回填后重置校验态（清掉残留红框；现值来自后端必然合法）
     $('cfgNote').textContent = '';
   } catch (e) { toast('读取配置失败：' + e.message, 'err'); }
@@ -1047,8 +1052,45 @@ function collectConfig() {
     }
     if (v !== undefined) put(out, path, v);
   }
+  let aliases;
+  try {
+    aliases = JSON.parse($('cfgModelAliases').value.trim() || '{}');
+    if (!aliases || typeof aliases !== 'object' || Array.isArray(aliases)) throw new Error('格式必须是 JSON 对象');
+  } catch (e) {
+    $('cfgModelAliases').classList.add('invalid');
+    throw new Error('模型映射 JSON 无效：' + e.message);
+  }
+  $('cfgModelAliases').classList.remove('invalid');
+  put(out, ['model_mapping', 'aliases'], aliases);
   return out;
 }
+
+async function loadProviderStatus() {
+  const el = $('providerStatus');
+  if (!el) return;
+  try {
+    const headers = {};
+    const key = localStorage.getItem(LS_KEY);
+    if (key) headers.Authorization = 'Bearer ' + key;
+    const res = await fetch('/v1/providers', { headers });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const state = await res.json();
+    if (!state.enabled) {
+      el.textContent = '内置 Provider 尚未启动。开启并保存后重启 WB2API，登录记录才会参与路由。';
+      return;
+    }
+    const names = { zcode:'ZCode', qoder:'Qoder 国际', 'qoder-cn':'Qoder 国内',
+      qwenwork:'千问办公', 'qwenwork-enterprise':'千问办公企业', codearts:'华为 CodeArts' };
+    const rows = Object.entries(names).map(([id, name]) => {
+      const count = Number(state.accounts?.[id]?.count || 0);
+      return name + '：' + count + ' 个凭据';
+    });
+    el.textContent = '内部插件运行中 · ' + rows.join('  /  ');
+  } catch (e) {
+    el.textContent = '无法获取内置 Provider 状态：' + e.message;
+  }
+}
+$('btnProviderStatus').onclick = loadProviderStatus;
 /* Go 时长字段即时校验：空 = 沿用现值（collectConfig 跳过发送）；非空必须是
    ParseDuration 语法（30m / 2h / 600s / 1h30m，可组合可带小数）。与后端
    config.go normalize() 的 time.ParseDuration 同口径，脏值在前端就地标红，
@@ -1093,10 +1135,18 @@ $('cfgForm').onsubmit = async ev => {
     toast('「' + (el.closest('.fld')?.querySelector('.lb')?.textContent || firstBad) + '」' + DURATION_TIP, 'err');
     return;
   }
+  let proposed;
+  try {
+    proposed = collectConfig();
+  } catch (e) {
+    toast(e.message, 'err');
+    $('cfgModelAliases').focus();
+    return;
+  }
   const btn = $('btnCfgSave');
   btn.disabled = true; btn.textContent = '保存中…';
   try {
-    const r = await api('config', { method: 'POST', body: JSON.stringify(collectConfig()) });
+    const r = await api('config', { method: 'POST', body: JSON.stringify(proposed) });
     const n = (r.restart_required || []).length;
     toast(n ? '配置已保存，其中 ' + n + ' 项需重启进程生效' : '配置已保存并立即生效', 'ok');
     // 密钥可能已改：本次会话沿用新值，避免下一次轮询被 401。

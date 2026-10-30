@@ -530,6 +530,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 // 恒返回完整清单中的"与当前进程装配期依赖相关"的项——面板据此提示用户。
 func restartRequiredFields(c *Config) []string {
 	var out []string
+	out = append(out, "model_mapping.aliases", "providers.enabled", "providers.auth_file")
 	// 这些字段在进程内被监听地址/HTTP client/目录句柄等装配期对象捕获。
 	if c.Listen != "" {
 		out = append(out, "listen")
