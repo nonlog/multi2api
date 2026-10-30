@@ -85,6 +85,9 @@ async function saveAuth(key, next, { enable = false } = {}) {
   // Background token refresh retains an explicitly disabled account. A
   // conscious relogin or import restores the account to the usable pool.
   return changeAuth(store => {
+    // A late upstream refresh must not resurrect an account removed by the
+    // operator while that request was in-flight.
+    if (!enable && !Object.hasOwn(store, key)) return
     store[key] = { ...next, disabled: !enable && store[key]?.disabled === true }
   })
 }
@@ -94,10 +97,12 @@ function saveAccountKey(id, record) {
   // duplicate in rotation. Never synthesize or claim a device identity.
   const uid = String(record.uid || "")
   const accountId = String(record.accountId || "")
+  const access = String(record.access || "")
   const existing = allProviderKeys(id).find(key => {
     const a = credentials[key]
     return (uid && String(a.uid || "") === uid) ||
-      (accountId && String(a.accountId || "") === accountId)
+      (accountId && String(a.accountId || "") === accountId) ||
+      (access && String(a.access || "") === access)
   })
   if (existing) return existing
   return !Object.hasOwn(credentials, id) ? id : id + "#" + randomUUID().slice(0, 10)

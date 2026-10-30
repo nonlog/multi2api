@@ -391,7 +391,8 @@ function renderProviderAccounts() {
   body.innerHTML = pvAccounts.map(a => {
     const quota = pvQuotas.get(a.account);
     const state = a.disabled ? ['已禁用','bad'] : a.state === 'login_expired'
-      ? ['授权已过期','bad'] : ['凭据已导入','warn'];
+      ? ['授权已过期','bad'] : quota?.error ? ['额度查询失败','bad']
+      : quota ? ['额度查询成功',''] : ['凭据已导入','warn'];
     const windows = (quota?.windows || []).map(w => w.display || w.name).filter(Boolean).join(' · ');
     const balance = quota?.error ? '查询失败：' + quota.error :
       quota ? [quota.plan, windows].filter(Boolean).join(' · ') || '无额度数据' : '尚未查询';
