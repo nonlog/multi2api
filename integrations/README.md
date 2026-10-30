@@ -62,8 +62,10 @@ no second API host or key.
   results, and streamed arguments. Vendor-specific image/audio formats,
   proprietary reasoning signatures, and external server-side tools are not
   magically supported.
-- Only successful signed-in providers appear in `/v1/models`. A models
-  listing failure falls back to the plugin's static catalogue rather than
-  inventing an active account.
+- Only providers with **imported nonempty access/refresh credentials** appear
+  in `/v1/models`; that does not itself prove that a token is still valid.
+  A model-listing failure may fall back to the plugin's static catalogue,
+  which is not proof of live model entitlement. Verify a selected model
+  with a small real request before treating it as available.
 - A provider's signing protocol or permission changes can still cause 401/403
   or account restrictions. Using a plugin does not bypass the vendor's rules.

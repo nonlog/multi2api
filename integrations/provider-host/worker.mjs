@@ -36,7 +36,14 @@ const roundRobin = new Map()
 function providerKeys(id) {
   return Object.keys(credentials)
     .filter(k => k === id || k.startsWith(id + "#"))
-    .filter(k => credentials[k] && typeof credentials[k] === "object")
+    .filter(k => {
+      const record = credentials[k]
+      // Provider placeholders are not usable login sessions. Do not list
+      // them as active accounts or randomly route requests to them.
+      return record && typeof record === "object" &&
+        ((typeof record.access === "string" && !!record.access.trim()) ||
+         (typeof record.refresh === "string" && !!record.refresh.trim()))
+    })
     .sort()
 }
 

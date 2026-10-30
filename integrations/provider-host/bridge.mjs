@@ -148,6 +148,7 @@ export function anthroStreamToChat(source, model) {
   let remainder = ""
   let done = false
   let callIndex = 0
+  let promptTokens = 0
   const blocks = new Map()
   const emit = (v) => encoder.encode("data: " + encode(v) + "\n\n")
   return new ReadableStream({
@@ -167,7 +168,9 @@ export function anthroStreamToChat(source, model) {
               controller.close()
               return
             }
-            remainder += decoder.decode(next.value, { stream: true }).replaceAll("\r\n", "\n")
+            remainder += decoder.decode(next.value, { stream: true })
+            // Normalize after joining chunks: CRLF can straddle reads.
+            remainder = remainder.replaceAll("\r\n", "\n")
             continue
           }
           const frame = remainder.slice(0, i)
@@ -178,7 +181,10 @@ export function anthroStreamToChat(source, model) {
           try { event = JSON.parse(line.slice(6)) } catch { continue }
           const kind = event.type
           const delta = { role: "assistant" }
-          if (kind === "content_block_start") {
+          if (kind === "message_start") {
+            promptTokens = Number(event.message?.usage?.input_tokens || 0)
+            continue
+          } else if (kind === "content_block_start") {
             const block = event.content_block || {}
             if (block.type === "tool_use") {
               const index = callIndex++
@@ -204,9 +210,9 @@ export function anthroStreamToChat(source, model) {
               choices: [{ index: 0, delta: {}, finish_reason: anthroStopReason(event.delta?.stop_reason) }],
               ...(event.usage ? {
                 usage: {
-                  prompt_tokens: Number(event.usage.input_tokens || 0),
+                  prompt_tokens: promptTokens,
                   completion_tokens: Number(event.usage.output_tokens || 0),
-                  total_tokens: Number(event.usage.input_tokens || 0) + Number(event.usage.output_tokens || 0),
+                  total_tokens: promptTokens + Number(event.usage.output_tokens || 0),
                 },
               } : {}),
             }))
