@@ -155,17 +155,19 @@ func TestTranslateRequestNamespaceAndCustomTools(t *testing.T) {
 	if len(tools) != 3 {
 		t.Fatalf("tools len = %d, want 3: %s", len(tools), chat)
 	}
-	// namespace 展开出的工具是扁平 function。
+	// Namespace functions now have the nested Chat schema, not flat Responses.
 	ns0, _ := tools[0].(map[string]any)
-	if ns0["type"] != "function" || ns0["name"] != "list_threads" {
-		t.Errorf("tool[0] = %v", ns0)
+	nsfn, _ := ns0["function"].(map[string]any)
+	if ns0["type"] != "function" || nsfn["name"] != "list_threads" || ns0["name"] != nil {
+		t.Errorf("tool[0] has invalid Chat schema = %v", ns0)
 	}
-	// custom 工具被降级成单 input 参数的 function。
+	// Freeform custom tools must also use Chat function nesting.
 	custom, _ := tools[2].(map[string]any)
-	if custom["type"] != "function" || custom["name"] != "apply_patch" {
-		t.Errorf("custom tool = %v", custom)
+	customFn, _ := custom["function"].(map[string]any)
+	if custom["type"] != "function" || customFn["name"] != "apply_patch" || custom["name"] != nil {
+		t.Errorf("custom tool has invalid Chat schema = %v", custom)
 	}
-	params, _ := custom["parameters"].(map[string]any)
+	params, _ := customFn["parameters"].(map[string]any)
 	props, _ := params["properties"].(map[string]any)
 	if _, ok := props["input"]; !ok {
 		t.Errorf("custom tool parameters = %v, want input property", params)
@@ -176,6 +178,40 @@ func TestTranslateRequestNamespaceAndCustomTools(t *testing.T) {
 	if got := meta.NamespaceMap["list_threads"]; got != "codex_app" {
 		t.Errorf("namespace map = %v", meta.NamespaceMap)
 	}
+}
+
+// TestTranslateRequestFlatFunctionsAreNested is a real Responses caller's
+// function definition. WorkBuddy ignores the flat shape and the model then
+// claims the client's declared tool does not exist.
+func TestTranslateRequestFlatFunctionsAreNested(t *testing.T) {
+	body := []byte(`{
+		"model":"deepseek-v4.1-flash", "input":"call ping", "stream":true,
+		"tool_choice":{"type":"function","name":"ping"},
+		"tools":[
+			{"type":"function","name":"ping","description":"check","strict":true,"parameters":{"type":"object","properties":{"msg":{"type":"string"}},"required":["msg"]}},
+			{"type":"function","function":{"name":"already_nested","description":"legacy","parameters":{"type":"object"}}}
+		]
+	}`)
+	chat, meta, err := TranslateRequest(body)
+	if err != nil { t.Fatal(err) }
+	var out map[string]any
+	if err := json.Unmarshal(chat, &out); err != nil { t.Fatal(err) }
+	functions, ok := out["tools"].([]any)
+	if !ok || len(functions) != 2 { t.Fatalf("functions = %v", out["tools"]) }
+	ping := functions[0].(map[string]any)
+	inner := ping["function"].(map[string]any)
+	if ping["type"] != "function" || ping["name"] != nil || inner["name"] != "ping" || inner["strict"] != true {
+		t.Fatalf("flat Responses tool was not normalized to Chat: %v", ping)
+	}
+	if inner["description"] != "check" || inner["parameters"].(map[string]any)["type"] != "object" {
+		t.Fatalf("function schema changed during conversion: %v", inner)
+	}
+	legacy := functions[1].(map[string]any)
+	if legacy["name"] != nil || legacy["function"].(map[string]any)["name"] != "already_nested" {
+		t.Fatalf("pre-nested schema was double-wrapped: %v", legacy)
+	}
+	if len(meta.Tools) != 2 { t.Fatal("original client tools must be retained in metadata") }
+	if _, ok := meta.ToolChoice.(map[string]any); !ok { t.Fatal("tool choice metadata was dropped") }
 }
 
 // TestFromChatText 覆盖纯文本的非流式折叠。

@@ -1080,3 +1080,7 @@ sudo chown -R 10001:10001 ./auths ./data ./config.json
 - Responses SSE 不再将上游 HTTP 200/TCP EOF 当成生成完成：缺少 Chat `finish_reason` 时发 `response.failed`；`finish_reason=length` 发 `response.incomplete`。正文中被 SSE 分片拆散的原生 DSML 工具调用也按当前请求声明的 allowlist 重建为结构化 `function_call` / `custom_tool_call`，未知工具名严格拒绝，不会把工具指令误作最终文本。
 - CodeArts OAuth 保留官方 `codearts-agent` PKCE/DPoP 协议及 `127.0.0.1` 回调；当管理面板运行在远端 VPS 上时，用户可以将华为授权后浏览器地址栏里无法打开的回调 URL 粘贴回**原生账号弹窗**。网关验证回调端口与 HTTPS 华为中间跳转地址，并使用同一 PKCE/DPoP 会话完成令牌交换；不暴露或转发凭据至第三方主机。登录必须由账号本人在华为网页上确认。
 - CodeArts 额度查询现在使用与对话相同的临时凭据续期（并写回旋转后的 refresh_token），明确显示 HTTP 状态/`APIG.0602`、不可续期时提示重新授权；取消原有的统一 `CodeArts answered an error`。多平台及其余 Provider 的配置和 API 路径不变。
+
+### v1.13.7 · Responses 工具声明的 Chat 格式适配
+
+`/v1/responses` 传入的扁平 function、自定义 freeform 与 namespace 工具在发给 WorkBuddy Chat 上游之前统一改为 OpenAI Chat Completions 的嵌套 `tools[].function` 结构。原版本把扁平 Responses 工具直接透传，上游无法识别，使 Codex 的声明工具不可用，模型只能返回内置 Python 等工具相关文本。新版保留用户工具的 schema、参数、`strict`、namespace 映射和 freeform 输入回填，同时保留本来已嵌套的 Chat 工具定义；不改变 `/v1/chat/completions` 的直接客户端协议，也不改 NewAPI 模型列表。

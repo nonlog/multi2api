@@ -177,7 +177,13 @@ func ApplyNamespaceToCalls(items []any, mapping map[string]string) int {
 	return fixed
 }
 
-// toolsForChat 把展开后的工具列表转成上游 Chat 形态，并收集 custom 工具名。
+// toolsForChat converts the Responses API's flat tool definitions into the
+// nested OpenAI Chat Completions schema expected by the WorkBuddy upstream:
+//   Responses: {"type":"function","name":"ping","parameters":{...}}
+//   Chat:      {"type":"function","function":{"name":"ping","parameters":{...}}}
+// A flat passthrough silently drops all client-provided functions upstream:
+// models then claim they can only access their preinstalled internal tools,
+// even if Responses asks for a required/forced function_call.
 func toolsForChat(tools []any) ([]any, map[string]bool) {
 	out := make([]any, 0, len(tools))
 	custom := map[string]bool{}
@@ -186,17 +192,43 @@ func toolsForChat(tools []any) ([]any, map[string]bool) {
 		if !ok {
 			continue
 		}
-		if strings.EqualFold(stringOf(item["type"]), "custom") {
+		typ := strings.ToLower(stringOf(item["type"]))
+		if typ == "custom" {
 			name := stringOf(item["name"])
 			if name != "" {
 				custom[name] = true
 			}
-			out = append(out, downgradeCustomTool(item))
+			out = append(out, toChatFunctionTool(downgradeCustomTool(item)))
 			continue
 		}
+		if typ == "function" || (typ == "" && stringOf(item["name"]) != "") {
+			out = append(out, toChatFunctionTool(item))
+			continue
+		}
+		// Unsupported/forward-compatible tool types keep their previous behavior.
 		out = append(out, item)
 	}
 	return out, custom
+}
+
+// toChatFunctionTool handles flat Responses and already-nested Chat shapes
+// without wrapping function twice or mutating the user's declared schema.
+func toChatFunctionTool(item map[string]any) map[string]any {
+	if fn, ok := item["function"].(map[string]any); ok {
+		return map[string]any{"type": "function", "function": fn}
+	}
+	fn := make(map[string]any, 4)
+	for _, field := range []string{"name", "description", "parameters", "strict"} {
+		if value, ok := item[field]; ok && value != nil {
+			fn[field] = value
+		}
+	}
+	if fn["parameters"] == nil {
+		fn["parameters"] = firstNonNil(item["input_schema"], map[string]any{
+			"type": "object", "properties": map[string]any{},
+		})
+	}
+	return map[string]any{"type": "function", "function": fn}
 }
 
 // downgradeCustomTool 把 Responses 的 custom（freeform）工具降级成 Chat function。
