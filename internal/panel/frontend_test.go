@@ -62,6 +62,21 @@ func TestIndexHTMLNoInlineScript(t *testing.T) {
 	}
 }
 
+// TestIndexHTMLNoInlineEventHandlers ensures strict CSP does not block login
+// on Enter; HTML attributes onsubmit/onclick are forbidden even without scripts.
+func TestIndexHTMLNoInlineEventHandlers(t *testing.T) {
+	p := newTestPanel()
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, httptest.NewRequest("GET", "/panel/", nil))
+	body := rec.Body.String()
+	if match := regexp.MustCompile(`(?i)\son[a-z]+\s*=`).FindString(body); match != "" {
+		t.Fatalf("CSP-blocked inline event handler: %s", match)
+	}
+	if !strings.Contains(body, `<form id="keyForm"`) {
+		t.Fatal("key dialog must use the external script's submit listener")
+	}
+}
+
 // TestAppJSTopLevelSmoke app.js 顶层求值冒烟（v1.11.3/1.11.4 两连炸后补的运行时闸门）：
 // node + DOM 桩执行 app.js（含按 hash 落到各视图的 go() 顶层调用），抓 TDZ/
 // ReferenceError 类运行时错误——Go 侧 frontend_test 不执行 JS，语法层检查对此全盲。

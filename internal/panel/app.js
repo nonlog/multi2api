@@ -329,7 +329,8 @@ $('btnKey').onclick = async () => {
     start();
   } catch (e) { $('keyErr').hidden = false; }
 };
-$('keyInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnKey').click(); });
+// Keep Enter-to-unlock without inline HTML handlers or duplicate native form submits.
+$('keyForm').addEventListener('submit', e => { e.preventDefault(); $('btnKey').click(); });
 
 /* ── 路由 ─────────────────────────────────────────────────────────── */
 /* 积分包明细共享缓存：「积分构成」视图与首页「积分到期提醒」卡片共用同一份
