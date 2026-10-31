@@ -1072,3 +1072,5 @@ sudo chown -R 10001:10001 ./auths ./data ./config.json
 - 允许任意使用、复制、修改、合并、发布、分发、再授权及销售
 - 再分发（源码或二进制形式）时，请保留原仓库的 MIT 版权声明与许可声明（如在 NOTICE 或 README 中注明原始出处 `https://github.com/Sliverkiss/workbuddy2api`）
 - 本项目不授予任何上游（CodeBuddy / 腾讯）接口或服务的权利；使用者仍需自行遵守上游服务条款
+
+**v1.13.5 静态资源一致性修复**：面板将内嵌 `app.js` 内容 SHA-256 前缀作为脚本资源查询参数（`/panel/app.js?v=<content-hash>`），并在 HTML/JS 响应中明确设置刷新策略。Cloudflare/浏览器即使缓存旧脚本，也不会将新版 HTML 与旧版操作逻辑混合；无需用户清空浏览器缓存。

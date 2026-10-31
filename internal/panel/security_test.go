@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -106,8 +107,14 @@ func TestIndexReferencesExternalScript(t *testing.T) {
 	p.ServeHTTP(rec, httptest.NewRequest("GET", "/panel/", nil))
 	body := rec.Body.String()
 
-	if !strings.Contains(body, `<script src="app.js"></script>`) {
-		t.Error("index.html must load app.js externally (inline script is blocked by CSP)")
+	if !strings.Contains(body, `<script src="app.js?v=`+appJSRevision+`"></script>`) {
+		t.Error("index.html must load exact embedded app.js revision (inline script is blocked by CSP)")
+	}
+	if strings.Contains(body, `<script src="app.js"></script>`) {
+		t.Error("unversioned JS is vulnerable to Cloudflare/browser stale cache")
+	}
+	if !strings.Contains(rec.Header().Get("Cache-Control"), "no-store") {
+		t.Errorf("HTML must prohibit stale cache, got %s", rec.Header().Get("Cache-Control"))
 	}
 	// 反例保护：出现内联 <script>...</script> 内容块即为回归
 	if strings.Contains(body, "<script>\n") || strings.Contains(body, "<script> ") {
@@ -128,6 +135,14 @@ func TestAppScriptServed(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "'use strict'") {
 		t.Error("app.js body looks wrong")
+	}
+	if !strings.Contains(rec.Header().Get("Cache-Control"), "no-cache") {
+		t.Error("app.js must support cache revalidation even if CDN overrides its TTL")
+	}
+	revised := httptest.NewRecorder()
+	p.ServeHTTP(revised, httptest.NewRequest("GET", "/panel/app.js?v="+appJSRevision, nil))
+	if revised.Code != http.StatusOK || !bytes.Equal(revised.Body.Bytes(), rec.Body.Bytes()) {
+		t.Fatal("versioned app.js must route to the same embedded script")
 	}
 }
 

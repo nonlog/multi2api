@@ -9,7 +9,10 @@
 package panel
 
 import (
+	"bytes"
+	"crypto/sha256"
 	_ "embed"
+	"fmt"
 	"net/http"
 )
 
@@ -18,6 +21,13 @@ var indexHTML []byte
 
 //go:embed app.js
 var appJS []byte
+
+// Version the browser script using its EMBEDDED CONTENT, not a human-maintained
+// release number. This avoids a split UI when Cloudflare/browser caches a prior
+// app.js (Cloudflare may override Cache-Control with a long TTL).
+var appJSRevision = fmt.Sprintf("%x", sha256.Sum256(appJS))[:16]
+var indexHTMLVersioned = bytes.Replace(indexHTML, []byte(`src="app.js"`),
+	[]byte(`src="app.js?v=` + appJSRevision + `"`), 1)
 
 // csp 内容安全策略（严格版，无需 unsafe-inline）：
 //   - default-src 'none'        默认全禁，逐个开口
@@ -47,14 +57,16 @@ func setSecurityHeaders(w http.ResponseWriter) {
 // index 输出面板页面（静态无秘密；数据接口 /panel/api/* 才走鉴权）。
 func (p *Panel) index(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(indexHTML)
+	_, _ = w.Write(indexHTMLVersioned)
 }
 
 // appScript 输出前端逻辑（同源脚本，供 CSP script-src 'self' 加载）。
 func (p *Panel) appScript(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
+	w.Header().Set("Cache-Control", "private, no-cache, max-age=0, must-revalidate")
 	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(appJS)
