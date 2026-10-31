@@ -4,13 +4,14 @@ const LS_KEY = 'wb2api.key', LS_THEME = 'wb2api.theme';
 let theme = localStorage.getItem(LS_THEME) || 'auto';   // auto | light | dark
 let view = 'accounts';
 let overviewData = null, cfgLoaded = null;
-let logPin = true, loginState = null, loginTimer = null;
+let logPin = true, loginState = null, loginTimer = null, loginPollingState = null, loginGeneration = 0;
 let refTimer = null;
 /* 视图级筛选状态（模块级声明放在文件顶部，避免顶层 go() 早于声明执行时踩 TDZ）。 */
 let mdFilter = { q: '', realm: '', cap: '', effort: '', promo: '', sort: 'default' };
 let mdAll = [], mdProbes = {}, mdProbeOf = () => undefined;
 let pvAccounts = [], pvQuotas = new Map(), pvLoginProvider = '', pvMethods = [];
 let modelAliasWB = {}, modelAliasProvider = {};
+let modelAliasAuto = [];
 let reqFilter = { q: '', outcome: '' };
 let reqEntries = [];
 let usDim = 'account', usCreditDim = 'account', usSort = 'total';
@@ -374,62 +375,136 @@ setTimeout(() => {
 }, 0);
 
 /* ── 账号池 ───────────────────────────────────────────────────────── */
+/* Account workspace: filter, inspect, and act from one consistent surface. */
 const PV_NAMES = { zcode:'ZCode', qoder:'Qoder 国际', 'qoder-cn':'Qoder 国内',
   qwenwork:'千问办公', 'qwenwork-enterprise':'千问企业', codearts:'华为 CodeArts' };
-const PV_OUTCOME = { claimed:'已领取', done:'已完成', failed:'失败', not_run:'尚未签到',
-  unsupported:'不支持', ineligible:'条件不足', busy:'进行中', skipped:'已跳过' };
+const PV_SIGNS = {zcode:'Z',qoder:'Q','qoder-cn':'Q',qwenwork:'千','qwenwork-enterprise':'千',codearts:'C'};
+const PV_OUTCOME = { claimed:'已领取', done:'已完成', failed:'签到失败', not_run:'未签到',
+  unsupported:'不支持', ineligible:'暂不可签到', busy:'签到中', skipped:'已跳过' };
+let pvFilter = '', pvQuotaBusy = new Set(), pvQuotaUpdated = new Map(), pvQuotaSync = null;
+let pvLastAutoSync = 0;
+function providerState(a, quota) {
+  if (a.disabled) return { label:'已禁用', className:'failed' };
+  if (a.state === 'login_expired' || quota?.signIn === 'expired') return {label:'授权已过期',className:'failed'};
+  if (quota?.error) return {label:'额度查询异常',className:'pending'};
+  if (quota && !quota.error) return {label:'已连接',className:''};
+  return {label:'等待校验',className:'pending'};
+}
+function providerQuotaText(a, quota) {
+  if (pvQuotaBusy.has(a.provider)) return {main:'查询额度中…',sub:'正在连接官方服务',css:'loading'};
+  if (!quota) return {main:'尚无额度数据',sub:'将在后台自动查询',css:'dim'};
+  if (quota.error) return {main:'额度接口暂不可用',sub:quota.error,css:'error'};
+  const windows = (quota.windows || []).map(w => w.display || w.name).filter(Boolean);
+  const main = windows[0] || quota.balance || quota.plan || '套餐信息已读取';
+  const sub = [quota.plan, ...windows.slice(1)].filter(v => !!v && v !== main).join(' · ')
+    || (quota.signIn === 'renewed' ? '授权已自动续期' : '官方额度读取成功');
+  return {main:String(main).slice(0,160),sub:String(sub).slice(0,160),css:''};
+}
 function renderProviderAccounts() {
   const sum = $('providerSummary'), body = $('providerAccountBody');
   if (!sum || !body) return;
-  sum.innerHTML = Object.entries(PV_NAMES).map(([id, name]) => {
-    const list = pvAccounts.filter(a => a.provider === id);
-    return '<div class="p-sum"><strong>' + list.length + '</strong><span>' + esc(name) + '</span></div>';
+  const filterItems = [['','全部平台'], ...Object.entries(PV_NAMES)];
+  sum.innerHTML = filterItems.map(([id,name]) => {
+    const count = pvAccounts.filter(a => !id || a.provider === id).length;
+    return '<button type="button" class="pv-filter" data-pv-filter="' + esc(id) +
+      '" aria-pressed="' + (pvFilter === id) + '">' + esc(name) +
+      '<span class="pv-count">' + count + '</span></button>';
   }).join('');
-  if (!pvAccounts.length) {
-    body.innerHTML = '<tr><td colspan="6"><div class="empty">暂无平台账号。点击「添加平台账号」，选择 ZCode、Qoder、千问办公或 CodeArts。</div></td></tr>';
+  const accounts = pvAccounts.filter(a => !pvFilter || a.provider === pvFilter);
+  if (!accounts.length) {
+    body.innerHTML = '<div class="pv-list-empty">' + (pvAccounts.length ? '这个平台还没有账号，点击右上角「添加账号」即可连接。'
+      : '尚未连接第三方平台。点击「添加账号」开始。') + '</div>';
     return;
   }
-  body.innerHTML = pvAccounts.map(a => {
+  body.innerHTML = accounts.map(a => {
     const quota = pvQuotas.get(a.account);
-    const state = a.disabled ? ['已禁用','bad'] : a.state === 'login_expired'
-      ? ['授权已过期','bad'] : quota?.error ? ['额度查询失败','bad']
-      : quota ? ['额度查询成功',''] : ['凭据已导入','warn'];
-    const windows = (quota?.windows || []).map(w => w.display || w.name).filter(Boolean).join(' · ');
-    const balance = quota?.error ? '查询失败：' + quota.error :
-      quota ? [quota.plan, windows].filter(Boolean).join(' · ') || '无额度数据' : '尚未查询';
-    const checkin = a.checkin_supported ? (PV_OUTCOME[a.checkin] || a.checkin) : '不支持签到';
-    return '<tr><td><span class="tag">' + esc(PV_NAMES[a.provider] || a.provider) + '</span></td>' +
-      '<td class="who"><div class="nm" title="' + esc(a.label) + '">' + esc(a.label) + '</div>' +
-      '<div class="id">' + esc(a.account) + '</div></td>' +
-      '<td><span class="pa-status ' + state[1] + '">' + state[0] + '</span></td>' +
-      '<td>' + esc(checkin) + '</td>' +
-      '<td style="min-width:190px;max-width:380px"><div class="pa-note" title="' + esc(balance) + '">' + esc(balance) + '</div></td>' +
-      '<td class="c-acts"><div class="pa-actions">' +
-      '<button type="button" class="xs" data-pv-action="quota" data-pv-provider="' + esc(a.provider) + '" data-pv-account="' + esc(a.account) + '">额度</button>' +
-      (a.checkin_supported ? '<button type="button" class="xs" data-pv-action="checkin" data-pv-provider="' + esc(a.provider) + '" data-pv-account="' + esc(a.account) + '">签到</button>' : '') +
-      '<select class="xs" aria-label="账号管理" data-pv-provider="' + esc(a.provider) + '" data-pv-account="' + esc(a.account) + '">' +
-      '<option value="">管理…</option><option value="relogin">重新登录</option><option value="' + (a.disabled ? 'enable' : 'disable') + '">' + (a.disabled ? '启用' : '禁用') + '</option><option value="remove">移除</option></select>' +
-      '</div></td></tr>';
+    const state = providerState(a, quota);
+    const credit = providerQuotaText(a, quota);
+    const checkin = a.checkin_supported ? (PV_OUTCOME[a.checkin] || a.checkin) : '无需签到';
+    const credentials = esc(a.account);
+    const vendor = esc(a.provider);
+    const label = esc(a.label || a.account);
+    const menu = [
+      ['relogin', a.provider === 'codearts' ? '更新登录凭据' : '重新授权',false],
+      ['quota','刷新额度',false],
+      ...(a.checkin_supported ? [['checkin','手动签到',false]] : []),
+      [a.disabled ? 'enable':'disable',a.disabled ? '启用账号':'禁用账号',false],
+      ['remove','移除账号',true],
+    ];
+    return '<div class="pv-row" role="listitem" data-pv-row="' + credentials + '">' +
+      '<div class="pv-ident"><span class="pv-symbol" data-provider="' + vendor + '" aria-hidden="true">' +
+      esc(PV_SIGNS[a.provider] || '?') + '</span><div class="pv-ident-text">' +
+      '<div class="pv-name" title="' + label + '">' + label + '<em>' + esc(PV_NAMES[a.provider]||a.provider) + '</em></div>' +
+      '<div class="pv-account-id" title="' + credentials + '">' + credentials + '</div></div></div>' +
+      '<div class="pv-state-cell"><span class="pv-state ' + esc(state.className) + '">' + esc(state.label) + '</span>' +
+      '<div class="pv-state-meta">' + esc(checkin) + '</div></div>' +
+      '<div class="pv-usage"><div class="pv-usage-main ' + esc(credit.css) + '" title="' + esc(credit.main) + '">' + esc(credit.main) +
+      '</div><div class="pv-usage-minor" title="' + esc(credit.sub) + '">' + esc(credit.sub) + '</div></div>' +
+      '<div class="pv-menu-host"><button type="button" class="pv-menu-toggle" data-pv-toggle="' + credentials +
+      '" aria-expanded="false" aria-label="管理账号 ' + label + '" aria-haspopup="true">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg></button>' +
+      '<div class="pv-menu" role="menu" hidden>' + menu.map(([action,text,danger]) =>
+        (action==='remove' ? '<div class="pv-separator"></div>' : '') +
+        '<button type="button" role="menuitem" class="' + (danger ? 'destructive':'') +
+        '" data-pv-action="' + action + '" data-pv-provider="' + vendor + '" data-pv-account="' + credentials + '">' + esc(text) + '</button>').join('') +
+      '</div></div></div>';
   }).join('');
 }
-async function loadProviderAccounts() {
+async function loadProviderAccounts({sync = true} = {}) {
   const body = $('providerAccountBody');
   if (!body) return;
   try {
-    const r = await api('providers/accounts');
-    pvAccounts = Array.isArray(r.data) ? r.data : [];
+    const response = await api('providers/accounts');
+    pvAccounts = Array.isArray(response.data) ? response.data : [];
+    const keys = new Set(pvAccounts.map(a => a.account));
+    for (const key of pvQuotas.keys()) if (!keys.has(key)) pvQuotas.delete(key);
     renderProviderAccounts();
+    if (sync && view === 'accounts') void syncProviderQuotas(false);
   } catch (e) {
-    body.innerHTML = '<tr><td colspan="6"><div class="empty">平台账号读取失败：' + esc(e.message) + '</div></td></tr>';
+    body.innerHTML = '<div class="pv-list-empty">读取平台账号失败：' + esc(e.message) + '</div>';
   }
 }
-async function pvQuota(provider) {
-  const headers = providerAuthHeaders();
-  const res = await fetch('/v1/providers/usage?provider=' + encodeURIComponent(provider), { headers });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  const data = await res.json();
-  for (const a of data.data || []) pvQuotas.set(a.account, a);
+async function pvQuota(provider, force = false) {
+  if (pvQuotaBusy.has(provider)) return;
+  if (!force && Date.now() - (pvQuotaUpdated.get(provider) || 0) < 180_000) return;
+  pvQuotaBusy.add(provider);
   renderProviderAccounts();
+  try {
+    const url = '/v1/providers/usage?provider=' + encodeURIComponent(provider) + (force ? '&refresh=1' : '');
+    const res = await fetch(url, { headers: providerAuthHeaders() });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const response = await res.json();
+    for (const account of response.data || []) pvQuotas.set(account.account, account);
+    pvQuotaUpdated.set(provider, Date.now());
+  } catch (e) {
+    for (const account of pvAccounts.filter(a => a.provider === provider)) {
+      pvQuotas.set(account.account, {error: '本次查询失败：' + e.message});
+    }
+    pvQuotaUpdated.set(provider, Date.now());
+  } finally {
+    pvQuotaBusy.delete(provider);
+    renderProviderAccounts();
+  }
+}
+async function syncProviderQuotas(force = false) {
+  if (pvQuotaSync) return pvQuotaSync;
+  const ids = [...new Set(pvAccounts.filter(a => !a.disabled).map(a => a.provider))]
+    .filter(id => force || Date.now() - (pvQuotaUpdated.get(id) || 0) >= 180_000);
+  if (!ids.length) return;
+  const el = $('pvSyncInfo');
+  if (el) { el.textContent = '正在同步 ' + ids.length + ' 个平台'; el.classList.add('loading'); }
+  pvQuotaSync = (async () => {
+    let next = 0;
+    await Promise.all(Array.from({length: Math.min(2, ids.length)}, async () => {
+      while (next < ids.length) await pvQuota(ids[next++], force);
+    }));
+    pvLastAutoSync = Date.now();
+  })();
+  try { await pvQuotaSync; }
+  finally {
+    pvQuotaSync = null;
+    if (el) { el.textContent = '额度已自动更新'; el.classList.remove('loading'); }
+  }
 }
 async function pvCheckin(provider, account) {
   const res = await fetch('/v1/providers/checkin', {
@@ -437,37 +512,57 @@ async function pvCheckin(provider, account) {
     body: JSON.stringify({ provider, account }),
   });
   if (!res.ok) throw new Error('HTTP ' + res.status);
-  await loadProviderAccounts();
+  await loadProviderAccounts({sync:false});
+  toast('签到状态已更新', 'ok');
 }
 async function pvOperate(provider, account, action) {
   if (action === 'relogin') { openAdd(provider); return; }
-  if (action === 'remove' && !confirm('确定从 Multi2API 移除此账号吗？不会删除 Magpie 中的原凭据。')) return;
+  if (action === 'remove' && !confirm('确定移除此账号吗？Multi2API 的私有凭据会被移除，Magpie 原数据不受影响。')) return;
   await api('providers/account/action', { method:'POST', body:JSON.stringify({provider,account,action}) });
-  pvQuotas.delete(account);
+  pvQuotas.delete(account); pvQuotaUpdated.delete(provider);
   await loadProviderAccounts();
-  toast(action === 'remove' ? '账号已移除' : '账号状态已更新', 'ok');
+  toast(action === 'remove' ? '已移除账号' : '账号状态已更新', 'ok');
 }
-$('btnProviderAccounts').onclick = loadProviderAccounts;
-$('btnAddProvider').onclick = () => openAdd('zcode');
-$('providerAccountBody').addEventListener('click', async ev => {
-  const btn = ev.target.closest('button[data-pv-action]');
+function pvCloseMenus() {
+  for (const menu of $('providerAccountBody').querySelectorAll('.pv-menu')) menu.hidden = true;
+  for (const btn of $('providerAccountBody').querySelectorAll('.pv-menu-toggle')) btn.setAttribute('aria-expanded','false');
+}
+$('providerSummary').addEventListener('click', ev => {
+  const btn = ev.target.closest('[data-pv-filter]');
   if (!btn) return;
-  btn.disabled = true;
+  pvFilter = btn.dataset.pvFilter;
+  renderProviderAccounts();
+});
+$('btnProviderAccounts').onclick = async () => { await loadProviderAccounts({sync:false}); await syncProviderQuotas(true); };
+$('btnAddProvider').onclick = () => openAdd('qoder');
+$('providerAccountBody').addEventListener('click', async ev => {
+  const toggle = ev.target.closest('button[data-pv-toggle]');
+  if (toggle) {
+    const menu = toggle.parentElement.querySelector('.pv-menu');
+    const opening = !!menu?.hidden;
+    pvCloseMenus();
+    if (opening && menu) { menu.hidden = false; toggle.setAttribute('aria-expanded','true'); }
+    return;
+  }
+  const button = ev.target.closest('button[data-pv-action]');
+  if (!button) return;
+  const {pvAction:action,pvProvider:provider,pvAccount:account} = button.dataset;
+  pvCloseMenus();
+  button.disabled = true;
   try {
-    if (btn.dataset.pvAction === 'quota') await pvQuota(btn.dataset.pvProvider);
-    else if (btn.dataset.pvAction === 'checkin') await pvCheckin(btn.dataset.pvProvider, btn.dataset.pvAccount);
-  } catch (e) { toast('平台操作失败：' + e.message, 'err'); }
-  finally { btn.disabled = false; }
+    if (action === 'quota') await pvQuota(provider, true);
+    else if (action === 'checkin') await pvCheckin(provider, account);
+    else await pvOperate(provider, account, action);
+  } catch (e) { toast('操作失败：' + e.message, 'err'); }
+  finally { button.disabled = false; }
 });
-$('providerAccountBody').addEventListener('change', async ev => {
-  const sel = ev.target.closest('select[data-pv-account]');
-  if (!sel || !sel.value) return;
-  const action = sel.value; sel.value = '';
-  sel.disabled = true;
-  try { await pvOperate(sel.dataset.pvProvider, sel.dataset.pvAccount, action); }
-  catch (e) { toast('账号操作失败：' + e.message, 'err'); }
-  finally { sel.disabled = false; }
+document.addEventListener('click', ev => {
+  if (!ev.target.closest('#providerAccountBody .pv-menu-host')) pvCloseMenus();
 });
+setInterval(() => {
+  if (view === 'accounts' && document.visibilityState !== 'hidden' &&
+      Date.now() - pvLastAutoSync > 180_000) void syncProviderQuotas(false);
+}, 180_000);
 
 function renderAccounts(list) {
   const tb = $('accBody');
@@ -746,6 +841,7 @@ async function loadModels() {
     $('mdNote').textContent = mdAll.length + ' 个模型 · 已刷新降级缓存' + (hit ? ' · ' + hit + ' 个有实测上限' : '');
     renderModels();
     populateAliasTargets();
+    renderAutoUnifySources();
   } catch (e) {
     mdAll = [];
     tb.innerHTML = '<tr><td colspan="7"><div class="empty">' + esc(e.message) + '</div></td></tr>';
@@ -782,9 +878,49 @@ async function loadAliasConfig() {
     const d = await api('config');
     modelAliasWB = { ...(d.config?.model_mapping?.aliases || {}) };
     modelAliasProvider = { ...(d.config?.model_mapping?.provider_aliases || {}) };
+    modelAliasAuto = [...(d.config?.model_mapping?.auto_unify_models || [])];
+    for (const input of $('autoUnifyChoices').querySelectorAll('input[type="checkbox"]')) {
+      input.checked = modelAliasAuto.includes(input.value);
+    }
+    renderAutoUnifySources();
     renderAliasRows();
   } catch (e) { $('aliasStatus').textContent = '无法读取模型映射：' + e.message; }
 }
+function renderAutoUnifySources() {
+  const sourceIds = new Map();
+  for (const candidate of ['deepseek-v4.1-flash','glm-5.3-flash','glm-5.3']) sourceIds.set(candidate, new Set());
+  for (const item of mdAll) {
+    const id = String(item.id || '');
+    for (const candidate of sourceIds.keys()) {
+      if (id.includes(':') && id.split(':').slice(1).join(':').toLowerCase() === candidate) sourceIds.get(candidate).add(id);
+      if (id === candidate) {
+        for (const source of item.routing_sources || []) sourceIds.get(candidate).add(source);
+        for (const realm of item.routing_realms || []) sourceIds.get(candidate).add(realm + ':' + candidate);
+      }
+    }
+  }
+  for (const label of $('autoUnifyChoices').querySelectorAll('.auto-map-choice')) {
+    const input = label.querySelector('input');
+    const small = label.querySelector('small');
+    if (!input || !small) continue;
+    const sources = [...(sourceIds.get(input.value) || [])];
+    small.textContent = sources.length ? (sources.length + ' 个实际同名来源：' + sources.map(s => s.split(':')[0]).join('、'))
+      : '尚无可发现的同名上游，不会创建无效映射';
+  }
+}
+$('btnAutoUnifySave').onclick = async () => {
+  const targets = [...$('autoUnifyChoices').querySelectorAll('input:checked')].map(el => el.value);
+  const btn = $('btnAutoUnifySave'); btn.disabled = true;
+  try {
+    await api('config', {method:'POST',body:JSON.stringify({model_mapping:{auto_unify_models:targets}})});
+    modelAliasAuto = targets;
+    $('autoUnifyStatus').textContent = targets.length
+      ? '已保存 ' + targets.length + ' 个自动统一模型；重启 Multi2API 后自动发现实际可用来源并启用路由。'
+      : '已关闭自动统一；重启后生效。';
+    toast('自动映射已保存，重启后生效', 'ok');
+  } catch (e) { $('autoUnifyStatus').textContent = '保存失败：' + e.message; toast(e.message, 'err'); }
+  finally { btn.disabled = false; }
+};
 async function persistAliases(wb, providers) {
   const d = await api('config', {method:'POST',body:JSON.stringify({
     model_mapping:{aliases:wb,provider_aliases:providers},
@@ -1457,6 +1593,7 @@ $('cfgForm').onsubmit = async ev => {
 
 /* ── 添加账号 ─────────────────────────────────────────────────────── */
 function openAdd(provider = 'workbuddy') {
+  cancelProviderLogin(); loginGeneration++;
   $('addVeil').classList.add('on');
   $('addProvider').value = provider;
   $('providerCredential').value = '';
@@ -1468,6 +1605,7 @@ function openAdd(provider = 'workbuddy') {
   $('importDone').hidden = true; $('importErr').hidden = true;
   $('btnCopyUrl').hidden = true; $('btnOpenUrl').hidden = true;
   $('btnStartLogin').hidden = false; $('btnStartLogin').disabled = false;
+  $('addRetryRow').hidden = true;
   stopPoll();
   loginState = null;
   pvLoginProvider = '';
@@ -1492,7 +1630,8 @@ async function refreshProviderAdd() {
   $('workbuddyImportPanel').hidden = !isWorkBuddy;
   $('providerImportPanel').hidden = isWorkBuddy;
   $('addLoad').hidden = true; $('addReady').hidden = true;
-  $('addDone').hidden = true; $('addErr').hidden = true;
+  $('addDone').hidden = true; $('addErr').hidden = true; $('addRetryRow').hidden = true;
+  $('addInstructions').textContent = '';
   $('btnStartLogin').disabled = !isWorkBuddy;
   $('btnStartLogin').hidden = !$('addTabImport').hidden;
   $('btnCopyUrl').hidden = true; $('btnOpenUrl').hidden = true;
@@ -1512,9 +1651,11 @@ async function refreshProviderAdd() {
       sel.appendChild(option);
     }
     $('btnStartLogin').disabled = methods.length === 0;
-    hint.textContent = methods.length
-      ? '由该平台的官方 OAuth / 设备授权流程完成登录，不会伪造设备身份。'
-      : '此平台的登录需要官方客户端或本机 OAuth 回调。请切换到「导入 JSON」导入已有的合法凭据。';
+    hint.textContent = !methods.length
+      ? '此平台依赖官方客户端或本机 OAuth 回调，请使用「导入 JSON」功能。'
+      : provider === 'qoder'
+        ? 'Qoder 网页登录只是第一步，还必须在网页中同意授权本次设备。若授权不稳定，可改用 PAT 登录。'
+        : '使用官方浏览器授权，完成后将自动导入此平台账号。';
     renderProviderLoginInputs();
   } catch (e) { hint.textContent = '读取授权方式失败：' + e.message; }
 }
@@ -1543,23 +1684,26 @@ function renderProviderLoginInputs() {
 }
 $('providerLoginMethod').onchange = renderProviderLoginInputs;
 $('addProvider').onchange = () => {
-  stopPoll(); loginState = null; pvLoginProvider = ''; refreshProviderAdd();
+  cancelProviderLogin(); loginGeneration++; stopPoll(); loginState = null; pvLoginProvider = ''; refreshProviderAdd();
 };
 function startAddLogin() {
   if ($('addProvider').value !== 'workbuddy') { startProviderLogin(); return; }
   pvLoginProvider = '';
+  const generation = loginGeneration;
   const realm = (document.querySelector('input[name="addRealm"]:checked') || {}).value || 'cn';
   $('btnStartLogin').disabled = true;
   $('addLoad').hidden = false; $('addErr').hidden = true;
   api('login/start', { method: 'POST', body: JSON.stringify({ realm }) }).then(r => {
+    if (loginGeneration !== generation || !$('addVeil').classList.contains('on')) return;
     loginState = r.state;
     $('addUrl').textContent = r.url;
     $('addPick').hidden = true; // 选域锁定（会话已按该域发起）
     $('addLoad').hidden = true; $('addReady').hidden = false;
     $('btnStartLogin').hidden = true;
     $('btnCopyUrl').hidden = false; $('btnOpenUrl').hidden = false;
-    loginTimer = setInterval(pollLogin, 3000);
+    scheduleLoginPoll();
   }).catch(e => {
+    if (loginGeneration !== generation) return;
     $('addLoad').hidden = true;
     $('btnStartLogin').disabled = false;
     $('addErr').hidden = false;
@@ -1567,6 +1711,7 @@ function startAddLogin() {
   });
 }
 async function startProviderLogin() {
+  const generation = loginGeneration;
   const provider = $('addProvider').value;
   const method = Number($('providerLoginMethod').value);
   const inputs = {};
@@ -1576,44 +1721,105 @@ async function startProviderLogin() {
   $('btnStartLogin').disabled = true;
   $('addLoad').hidden = false; $('addErr').hidden = true;
   try {
-    const result = await api('providers/login/start', {
+    const request = api('providers/login/start', {
       method:'POST', body: JSON.stringify({ provider, method, inputs }),
     });
+    // PATs remain only inside the pending HTTPS request; clear DOM copies.
+    for (const input of $('providerLoginInputs').querySelectorAll('input[type="password"]')) input.value = '';
+    const result = await request;
+    if (generation !== loginGeneration || !$('addVeil').classList.contains('on') || $('addProvider').value !== provider) {
+      if (result?.state) void api('providers/login/cancel', {method:'POST', body:JSON.stringify({state:result.state})}).catch(() => {});
+      return;
+    }
     loginState = result.state; pvLoginProvider = provider;
-    $('addUrl').textContent = result.url;
+    $('addUrl').textContent = result.url || '';
+    $('addUrl').hidden = result.mode === 'pat';
+    $('addInstructions').textContent = result.instructions || '';
+    $('addPollText').textContent = result.mode === 'pat' ? '正在验证 PAT 并保存账号…'
+      : '等待官网确认设备授权；完成后自动同步账号…';
     $('providerLoginPick').hidden = true;
+    $('addRetryRow').hidden = true;
     $('addLoad').hidden = true; $('addReady').hidden = false;
     $('btnStartLogin').hidden = true;
-    $('btnCopyUrl').hidden = false; $('btnOpenUrl').hidden = false;
-    loginTimer = setInterval(pollLogin, 3000);
+    $('btnCopyUrl').hidden = result.mode === 'pat';
+    $('btnOpenUrl').hidden = result.mode === 'pat';
+    scheduleLoginPoll();
   } catch (e) {
+    if (generation !== loginGeneration) return;
     $('addLoad').hidden = true; $('btnStartLogin').disabled = false;
     $('addErr').hidden = false; $('addErr').textContent = e.message;
   }
 }
-function stopPoll() { if (loginTimer) { clearInterval(loginTimer); loginTimer = null; } }
+function stopPoll() { if (loginTimer) { clearTimeout(loginTimer); clearInterval(loginTimer); loginTimer = null; } }
+function scheduleLoginPoll() {
+  stopPoll();
+  loginTimer = setTimeout(pollLogin, 1700);
+}
+function cancelProviderLogin() {
+  if (!pvLoginProvider || !loginState) return;
+  const state = loginState;
+  // Best-effort: server ignores any late vendor response after cancellation.
+  void api('providers/login/cancel', {method:'POST', body:JSON.stringify({state})}).catch(() => {});
+}
 async function pollLogin() {
-  if (!loginState) return;
+  if (!loginState || loginPollingState === loginState) return;
+  const state = loginState;
+  const generation = loginGeneration;
+  loginPollingState = state;
   try {
     const r = pvLoginProvider
-      ? await api('providers/login/poll', { method:'POST', body:JSON.stringify({state:loginState}) })
-      : await api('login/poll?state=' + encodeURIComponent(loginState));
+      ? await api('providers/login/poll', { method:'POST', body:JSON.stringify({state}) })
+      : await api('login/poll?state=' + encodeURIComponent(state));
+    if (loginState !== state) return;
     if (r.error) throw new Error(r.error);
+    if (r.phase === 'saving') $('addPollText').textContent = '授权成功，正在安全保存账号…';
     if (r.done) {
-      stopPoll();
+      stopPoll(); loginState = null;
       $('addReady').hidden = true;
       $('addDone').hidden = false;
-      $('addDone').textContent = '已添加 ' + (r.account || r.nickname || r.uid) + (r.realm === 'global' ? '（国际版）' : '') + (r.credits >= 0 ? ' · 积分 ' + r.credits + (r.credits_total > 0 ? '/' + r.credits_total : '') : '') + '，账号已载入池中';
-      setTimeout(() => { closeAdd(); loadOverview(true); loadProviderAccounts(); loadModels(); }, 1600);
-    }
+      $('addDone').textContent = '账号已成功连接：' + (r.account || r.nickname || r.uid) + '。';
+      setTimeout(() => {
+        if (loginGeneration !== generation) return;
+        closeAdd(); loadOverview(true); loadProviderAccounts(); loadModels();
+      }, 1300);
+    } else scheduleLoginPoll();
   } catch (e) {
-    stopPoll();
+    if (state !== loginState) return;
+    // A transient 502/timeout while polling is not a vendor login failure.
+    if (/HTTP 502|HTTP 503|HTTP 504|Failed to fetch|网络|超时/i.test(e.message) && !/授权|设备/.test(e.message)) {
+      $('addPollText').textContent = '网络波动，正在重新检测授权状态…';
+      scheduleLoginPoll(); return;
+    }
+    stopPoll(); loginState = null;
     $('addReady').hidden = true;
     $('addErr').hidden = false;
-    $('addErr').textContent = e.message + '（关闭后重新添加）';
-  }
+    $('addErr').textContent = e.message;
+    $('providerLoginPick').hidden = pvLoginProvider === '';
+    $('addRetryRow').hidden = !pvLoginProvider;
+    $('btnUseQoderPat').hidden = !['qoder','qoder-cn'].includes(pvLoginProvider)
+      || !pvMethods.some(m => /PAT/i.test(m.label));
+    $('btnStartLogin').hidden = true;
+  } finally { if (loginPollingState === state) loginPollingState = null; }
 }
-function closeAdd() { stopPoll(); loginState = null; pvLoginProvider = ''; $('providerCredential').value = ''; $('addVeil').classList.remove('on'); }
+function closeAdd() {
+  cancelProviderLogin(); loginGeneration++; stopPoll(); loginState = null; pvLoginProvider = '';
+  $('providerCredential').value = ''; $('addVeil').classList.remove('on');
+}
+$('btnRetryProviderLogin').onclick = () => {
+  $('addErr').hidden = true; $('addRetryRow').hidden = true;
+  $('providerLoginPick').hidden = false;
+  $('btnStartLogin').hidden = false; $('btnStartLogin').disabled = false;
+  $('btnStartLogin').focus();
+};
+$('btnUseQoderPat').onclick = () => {
+  const method = pvMethods.find(m => /PAT/i.test(m.label));
+  if (!method) return;
+  $('providerLoginMethod').value = String(method.id);
+  renderProviderLoginInputs();
+  $('addErr').hidden = true; $('addRetryRow').hidden = true;
+  $('providerLoginPick').hidden = false;
+  $('btnStartLogin').hidden = false; $('btnStartLogin').disabled = false;
+};
 $('btnCloseAdd').onclick = closeAdd;
 $('btnStartLogin').onclick = startAddLogin;
 $('btnOpenUrl').onclick = () => open($('addUrl').textContent, '_blank', 'noopener,noreferrer');

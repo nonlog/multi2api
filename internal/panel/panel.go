@@ -164,6 +164,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/providers/methods", p.withAuth(p.providerMethods))
 	p.mux.HandleFunc("POST /panel/api/providers/login/start", p.withAuth(p.providerLoginStart))
 	p.mux.HandleFunc("POST /panel/api/providers/login/poll", p.withAuth(p.providerLoginPoll))
+	p.mux.HandleFunc("POST /panel/api/providers/login/cancel", p.withAuth(p.providerLoginCancel))
 	p.mux.HandleFunc("POST /panel/api/providers/import", p.withAuth(p.providerImport))
 	p.mux.HandleFunc("POST /panel/api/providers/account/action", p.withAuth(p.providerAccountAction))
 	p.mux.HandleFunc("POST /panel/api/login/start", p.withAuth(p.loginStart))
@@ -240,6 +241,9 @@ func (p *Panel) providerLoginStart(w http.ResponseWriter, r *http.Request) {
 }
 func (p *Panel) providerLoginPoll(w http.ResponseWriter, r *http.Request) {
 	p.providerProxy(w, r, "login/poll")
+}
+func (p *Panel) providerLoginCancel(w http.ResponseWriter, r *http.Request) {
+	p.providerProxy(w, r, "login/cancel")
 }
 func (p *Panel) providerImport(w http.ResponseWriter, r *http.Request) {
 	p.providerProxy(w, r, "import")

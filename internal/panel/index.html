@@ -616,6 +616,158 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
 .provider-import-note {font-size:12px;color:var(--ink-3);padding:8px 0 12px}
 @media(max-width:960px){.provider-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.alias-grid{grid-template-columns:1fr}.alias-row{grid-template-columns:1fr}}
 @media(max-width:600px){.provider-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* Multi-provider management: one quiet command surface, not a column of tiny actions.
+   Nova-style dense rows, consistent spacing, accessible control targets. */
+#providerAccountBox.pv-workspace {
+  overflow: visible; border-radius: 16px; background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 12px 38px rgba(0,0,0,.055);
+}
+#providerAccountBox .pv-heading { padding: 21px 24px 19px; border-bottom: 1px solid var(--line-soft); gap: 13px; }
+#providerAccountBox .pv-title-stack { min-width: 190px; }
+#providerAccountBox .pv-title-stack h3 { font-size: 17px; font-weight: 660; letter-spacing: -.02em; }
+#providerAccountBox .pv-title-stack p { color: var(--ink-3); font-size: 12.5px; margin-top: 4px; }
+#providerAccountBox button { font-family: var(--sans); }
+#providerAccountBox .pv-add-button, #providerAccountBox .pv-soft-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 8px; height: 36px; padding: 0 13px; border-radius: 10px;
+  font-size: 13px; font-weight: 560; white-space: nowrap;
+}
+#providerAccountBox button svg { width: 16px; height: 16px; flex: none; }
+#providerAccountBox .pv-soft-button { background: var(--surface-2); border-color: var(--line-soft); }
+#providerAccountBox .pv-sync-info { font-size: 12px; color: var(--ink-3); padding-right: 4px; }
+#providerAccountBox .pv-sync-info.loading { color: var(--accent); }
+#providerAccountBox .pv-filter-rail {
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 13px 22px;
+  border-bottom: 1px solid var(--line-soft); background: color-mix(in srgb,var(--surface),var(--surface-2) 35%);
+}
+#providerAccountBox .pv-filter {
+  display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px;
+  height: 32px; padding: 0 11px; background: transparent; border: 1px solid transparent;
+  color: var(--ink-2); border-radius: 9px; line-height: 1;
+}
+#providerAccountBox .pv-filter:hover { color: var(--ink); background: var(--surface-2); border-color: var(--line-soft); }
+#providerAccountBox .pv-filter[aria-pressed="true"] {
+  background: var(--accent-soft); border-color: color-mix(in srgb,var(--accent),transparent 68%);
+  color: var(--accent); font-weight: 600;
+}
+#providerAccountBox .pv-filter .pv-count { font: 600 11px/1 var(--mono); opacity: .74; }
+#providerAccountBox .pv-column-titles {
+  display: grid; grid-template-columns: minmax(230px,1.85fr) minmax(130px,.9fr) minmax(190px,1.1fr) 42px;
+  gap: 16px; align-items: center; padding: 11px 24px 8px; font-size: 11.5px;
+  color: var(--ink-3); letter-spacing: .02em;
+}
+#providerAccountBox .pv-list { padding: 0 13px 13px; }
+#providerAccountBox .pv-row {
+  display: grid; grid-template-columns: minmax(230px,1.85fr) minmax(130px,.9fr) minmax(190px,1.1fr) 42px;
+  align-items: center; gap: 16px; padding: 15px 11px; min-height: 81px;
+  border-top: 1px solid var(--line-soft); position: relative; transition: background .13s ease;
+}
+#providerAccountBox .pv-row:hover { background: var(--surface-2); border-radius: 10px; }
+#providerAccountBox .pv-ident { display: flex; align-items: center; gap: 12px; min-width: 0; }
+#providerAccountBox .pv-symbol {
+  display: grid; place-items: center; flex: none; width: 38px; height: 38px; border-radius: 11px;
+  background: var(--accent-soft); color: var(--accent); font-size: 15px; font-weight: 730;
+  letter-spacing: -.035em;
+}
+#providerAccountBox .pv-symbol[data-provider="qoder"],
+#providerAccountBox .pv-symbol[data-provider="qoder-cn"] { color: #24a29e; background: rgba(36,162,158,.12); }
+#providerAccountBox .pv-symbol[data-provider="codearts"] { color: #e46c65; background: rgba(228,108,101,.12); }
+#providerAccountBox .pv-symbol[data-provider="qwenwork"],
+#providerAccountBox .pv-symbol[data-provider="qwenwork-enterprise"] { color: #a676dc; background: rgba(166,118,220,.13); }
+#providerAccountBox .pv-ident-text, #providerAccountBox .pv-usage { min-width: 0; }
+#providerAccountBox .pv-name { color: var(--ink); font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#providerAccountBox .pv-name em { color: var(--ink-3); font-weight: 450; font-style: normal; font-size: 11.5px; margin-left: 7px; }
+#providerAccountBox .pv-account-id { color: var(--ink-3); font: 11px/1.8 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#providerAccountBox .pv-state { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; line-height: 1.5; font-weight: 560; }
+#providerAccountBox .pv-state:before { content: ''; display: block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+#providerAccountBox .pv-state.pending:before { background: var(--warn); }
+#providerAccountBox .pv-state.failed:before { background: var(--bad); }
+#providerAccountBox .pv-state.pending { color: var(--warn); }
+#providerAccountBox .pv-state.failed { color: var(--bad); }
+#providerAccountBox .pv-state-meta { color: var(--ink-3); font-size: 11.5px; margin-top: 4px; }
+#providerAccountBox .pv-usage-main { font-size: 13px; font-weight: 560; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#providerAccountBox .pv-usage-main.dim { color: var(--ink-3); font-weight: 450; }
+#providerAccountBox .pv-usage-minor { font-size: 11.5px; color: var(--ink-3); line-height: 1.5; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#providerAccountBox .pv-usage-main.error { color: var(--bad); }
+#providerAccountBox .pv-usage-main.loading { color: var(--accent); }
+#providerAccountBox .pv-menu-host { justify-self: end; position: relative; }
+#providerAccountBox .pv-menu-toggle { width: 36px; height: 36px; display: inline-flex; justify-content: center; align-items: center; border-radius: 10px; padding: 0; border-color: transparent; background: transparent; color: var(--ink-2); }
+#providerAccountBox .pv-menu-toggle:hover, #providerAccountBox .pv-menu-toggle[aria-expanded="true"] { background: var(--raise); border-color: var(--line); color: var(--ink); }
+#providerAccountBox .pv-menu { position: absolute; top: 42px; right: 0; z-index: 48; width: 178px;
+  padding: 5px; border-radius: 12px; border: 1px solid var(--line); background: var(--raise);
+  box-shadow: 0 16px 45px rgba(0,0,0,.20), 0 4px 12px rgba(0,0,0,.12);
+}
+#providerAccountBox .pv-menu button { display: block; text-align: left; width: 100%; min-height: 36px;
+  border: 0; background: transparent; border-radius: 8px; color: var(--ink-2);
+  padding: 8px 11px; font-size: 12.5px; font-weight: 500;
+}
+#providerAccountBox .pv-menu button:hover { color: var(--ink); background: var(--surface-2); }
+#providerAccountBox .pv-menu button.destructive { color: var(--bad); }
+#providerAccountBox .pv-menu button.destructive:hover { background: var(--bad-soft); }
+#providerAccountBox .pv-menu .pv-separator { height: 1px; margin: 4px 8px; background: var(--line-soft); }
+#providerAccountBox .pv-list-empty { padding: 44px 18px; text-align: center; color: var(--ink-3); font-size: 13px; }
+#providerAccountBox .pv-footnote { padding: 12px 24px 16px; border-top: 1px solid var(--line-soft); font-size: 11.5px; color: var(--ink-3); line-height: 1.7; }
+/* Credentials modal: one primary action and one quiet dismiss control. */
+#addVeil { background: rgba(7,10,18,.67); backdrop-filter: blur(5px); }
+#addVeil .dlg { width: min(560px,calc(100vw - 26px)) !important; border-radius: 18px; background: var(--surface); border-color: var(--line); overflow: hidden; box-shadow: 0 28px 90px rgba(0,0,0,.3); }
+#addVeil .dlg header { padding: 26px 28px 19px; }
+#addVeil .dlg header h3 { font-size: 20px; font-weight: 680; letter-spacing: -.02em; }
+#addVeil .pv-modal-subtitle { color: var(--ink-3); font-size: 12.5px; margin: 5px 0 16px; }
+#addVeil .dlg .tabs { margin-left: 0; padding: 4px; border: 1px solid var(--line-soft); }
+#addVeil .dlg .tabs .tab { min-height: 33px; padding: 6px 18px; font-size: 12.5px; border-radius: 8px; }
+#addVeil .dlg .body { padding: 23px 28px; }
+#addVeil .dlg .body select, #addVeil .dlg .body input:not([type=radio]), #addVeil .dlg textarea { border-radius: 10px; min-height: 42px; background: var(--surface-2); padding: 10px 13px; }
+#addVeil .dlg footer { padding: 17px 28px 20px; gap: 9px; background: color-mix(in srgb,var(--surface),var(--surface-2) 38%); }
+#addVeil .dlg footer button { border-radius: 10px; min-height: 38px; padding: 7px 15px; font-weight: 550; }
+#addVeil .pv-auth-progress { display: flex; align-items: flex-start; gap: 10px; border: 1px solid var(--line-soft); background: var(--surface-2); border-radius: 10px; padding: 14px 15px; margin: 14px 0 6px; font-size: 12.5px; color: var(--ink-2); }
+#addVeil .pv-loader { width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: pv-spin .8s linear infinite; flex: none; margin-top: 3px; }
+@keyframes pv-spin { to { transform: rotate(360deg); } }
+#addVeil .pv-auth-explain { font-size: 12.5px; color: var(--ink-2); line-height: 1.75; padding: 10px 0 0; }
+#addVeil .pv-auth-error { border-radius: 10px; background: var(--bad-soft); border: 1px solid color-mix(in srgb,var(--bad),transparent 65%); color: var(--bad); font-size: 12.5px; padding: 14px 15px; line-height: 1.7; overflow-wrap: anywhere; }
+#addVeil .pv-auth-retry { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 12px; }
+#addVeil .pv-auth-retry button { border-radius: 9px; min-height: 35px; padding: 6px 13px; }
+#addVeil .url { max-height: 105px; overflow: auto; font-size: 11px; line-height: 1.6; border-radius: 9px; }
+#addVeil .pv-auth-guidance { display: block; color: var(--ink-2); margin-top: 9px; font-size: 12px; line-height: 1.75; }
+@media (max-width: 1040px) {
+ #providerAccountBox .pv-column-titles { display: none; }
+ #providerAccountBox .pv-row { grid-template-columns: minmax(200px,2fr) minmax(120px,.9fr) minmax(140px,1.3fr) 40px; gap: 10px; }
+}
+@media (max-width: 670px) {
+ #providerAccountBox .pv-heading { padding: 18px; flex-wrap: wrap; }
+ #providerAccountBox .pv-heading .grow { flex-basis: 20px; }
+ #providerAccountBox .pv-filter-rail { padding: 12px 13px; }
+ #providerAccountBox .pv-row { grid-template-columns: minmax(0,1fr) 42px; gap: 9px; min-height: 0; padding: 14px 7px; }
+ #providerAccountBox .pv-ident { grid-column: 1; grid-row: 1; }
+ #providerAccountBox .pv-menu-host { grid-column: 2; grid-row: 1 / span 3; align-self: start; }
+ #providerAccountBox .pv-state-cell { grid-column: 1; grid-row: 2; padding-left: 50px; }
+ #providerAccountBox .pv-usage { grid-column: 1; grid-row: 3; padding-left: 50px; }
+ #providerAccountBox .pv-footnote { padding: 12px 16px; }
+ #addVeil .dlg header { padding: 20px 18px 16px; }
+ #addVeil .dlg .body { padding: 19px 18px; }
+ #addVeil .dlg footer { padding: 14px 18px 18px; flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) { #addVeil .pv-loader { animation: none; } }
+
+
+#modelAliasBox { border-radius: 16px; }
+#modelAliasBox .auto-mapping { padding: 22px 24px; }
+.auto-map-intro { display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:16px; }
+.auto-map-intro strong {font-size:15px;font-weight:660;}
+.auto-map-intro p {font-size:12.5px;color:var(--ink-3);max-width:650px;margin-top:4px;line-height:1.7}
+.auto-map-intro button {flex:none;min-height:36px;padding:7px 16px;border-radius:10px;font-size:12.5px}
+.auto-map-choices {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px;}
+.auto-map-choice {display:flex;align-items:flex-start;gap:10px;min-width:0;border-radius:12px;padding:15px 13px;
+  background:var(--surface-2);border:1px solid var(--line);cursor:pointer;transition:border-color .15s ease}
+.auto-map-choice:has(input:checked) {border-color:color-mix(in srgb,var(--accent),transparent 45%);background:var(--accent-soft)}
+.auto-map-choice input {margin-top:4px;flex:none;accent-color:var(--accent)}
+.auto-map-choice span {min-width:0;display:grid;gap:5px}
+.auto-map-choice strong {font:600 12.5px/1.5 var(--mono);color:var(--ink);overflow-wrap:anywhere}
+.auto-map-choice small {font-size:11.5px;color:var(--ink-3);line-height:1.6}
+.auto-map-advanced {border-top:1px solid var(--line-soft);margin-top:20px;padding-top:17px}
+.auto-map-advanced summary {cursor:pointer;font-size:12.5px;color:var(--ink-2);font-weight:600;user-select:none}
+.auto-map-advanced[open] summary {margin-bottom:18px}
+.auto-map-advanced .alias-grid {margin-top:8px}
+@media(max-width:930px){.auto-map-choices{grid-template-columns:1fr}.auto-map-intro{align-items:start;flex-wrap:wrap}}
 </style>
 </head>
 <body>
@@ -679,21 +831,23 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         <div class="stat"><div class="v" id="sSticky">-</div><div class="k">粘性会话</div></div>
       </div>
 
-      <div class="box" id="providerAccountBox">
-        <header>
-          <h3>多平台账号 <span class="hint">与 WorkBuddy 共用一个 API 入口、模型目录和网关密钥</span></h3>
+      <div class="box pv-workspace" id="providerAccountBox">
+        <header class="pv-heading">
+          <div class="pv-title-stack">
+            <h3>多平台账号</h3>
+            <p>统一管理授权、额度和每日签到</p>
+          </div>
           <span class="grow"></span>
-          <button class="xs" id="btnProviderAccounts">刷新账号</button>
-          <button class="xs primary" id="btnAddProvider">添加平台账号</button>
+          <span class="pv-sync-info" id="pvSyncInfo" role="status" aria-live="polite">自动同步额度</span>
+          <button type="button" class="pv-soft-button" id="btnProviderAccounts" title="刷新账号及额度">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-3.8L3 9"/><path d="M3 4v5h5"/><path d="M4 13a8 8 0 0 0 14.9 3.8L21 15"/><path d="M16 15h5v5"/></svg>刷新
+          </button>
+          <button type="button" class="primary pv-add-button" id="btnAddProvider"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>添加账号</button>
         </header>
-        <div class="pad"><div id="providerSummary" class="provider-grid"></div></div>
-        <div class="tbl-wrap">
-          <table class="acc">
-            <thead><tr><th>平台</th><th>账号</th><th>凭据状态</th><th>签到</th><th>额度 / 套餐</th><th class="c-acts">操作</th></tr></thead>
-            <tbody id="providerAccountBody"><tr><td colspan="6"><div class="empty">正在读取平台账号…</div></td></tr></tbody>
-          </table>
-        </div>
-        <div class="pad" style="padding-top:9px"><div class="hint">账号登录有效性需以实际额度查询或请求结果判断；“已导入”不等于可用。WorkBuddy 的积分、成长任务和旅行功能仍保留在下方原账号池。</div></div>
+        <div class="pv-filter-rail" id="providerSummary" role="toolbar" aria-label="按平台筛选"></div>
+        <div class="pv-column-titles" aria-hidden="true"><span>账号</span><span>授权状态</span><span>套餐与额度</span><span></span></div>
+        <div class="pv-list" id="providerAccountBody" role="list" aria-live="polite"><div class="pv-list-empty">正在载入账号与额度…</div></div>
+        <div class="pv-footnote">额度打开页面后自动查询，刷新结果会短时缓存；授权状态以实际请求结果为准。WorkBuddy 的积分与成长任务独立保留在下方。</div>
       </div>
 
       <!-- 卡片默认可见：此前 hidden + 「仅点检查才渲染」形成死锁（按钮藏在隐藏卡片里，
@@ -844,15 +998,25 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       </div>
       <div class="box" id="modelAliasBox">
         <header><h3>模型映射 <span class="hint">直接配置对外模型 ID → 实际上游模型</span></h3><span class="grow"></span><button class="xs" id="btnAliasReload">刷新映射</button></header>
-        <div class="pad">
-          <div class="alias-grid">
-            <label>对外模型名<input id="aliasName" placeholder="例如 glm-fast 或 coding-default" spellcheck="false" maxlength="128"></label>
-            <label>实际模型<select id="aliasTarget"><option value="">选择上游模型…</option></select></label>
-            <button id="btnAliasSave" class="primary" type="button">保存映射</button>
+        <div class="pad auto-mapping">
+          <div class="auto-map-intro"><div><strong>自动统一同名模型</strong><p>只归并真实同名的上游模型，优先使用 WorkBuddy 账号池；不可用时使用已接入的同名 Provider。</p></div>
+          <button type="button" class="primary" id="btnAutoUnifySave">应用自动映射</button></div>
+          <div class="auto-map-choices" id="autoUnifyChoices" role="group" aria-label="需要自动统一的模型">
+            <label class="auto-map-choice"><input type="checkbox" value="deepseek-v4.1-flash" checked><span><strong>deepseek-v4.1-flash</strong><small>正在发现对应上游…</small></span></label>
+            <label class="auto-map-choice"><input type="checkbox" value="glm-5.3-flash" checked><span><strong>glm-5.3-flash</strong><small>正在发现对应上游…</small></span></label>
+            <label class="auto-map-choice"><input type="checkbox" value="glm-5.3" checked><span><strong>glm-5.3</strong><small>正在发现对应上游…</small></span></label>
           </div>
-          <label class="realm-opt" style="margin-top:11px"><input type="checkbox" id="aliasBothRealms"> 同时映射 CN 与 Global 的同名 WorkBuddy 模型（账号池自动选择）</label>
-          <div id="aliasStatus" class="pa-note">映射修改保存到当前配置后，需要重启网关生效；旧模型 ID 不受影响。</div>
-          <div id="aliasRows" style="margin-top:13px"></div>
+          <div id="autoUnifyStatus" class="pa-note" role="status" aria-live="polite">修改配置后需重启网关，才会影响实际路由。</div>
+          <details class="auto-map-advanced"><summary>高级设置 · 自定义模型映射</summary>
+            <div class="alias-grid">
+              <label>对外模型名<input id="aliasName" placeholder="例如 coding-default" spellcheck="false" maxlength="128"></label>
+              <label>实际模型<select id="aliasTarget"><option value="">选择上游模型…</option></select></label>
+              <button id="btnAliasSave" class="primary" type="button">保存映射</button>
+            </div>
+            <label class="realm-opt" style="margin-top:11px"><input type="checkbox" id="aliasBothRealms"> WorkBuddy 同名模型跨 CN/Global 账号池</label>
+            <div id="aliasStatus" class="pa-note">高级映射也需要在重启后生效。</div>
+            <div id="aliasRows" style="margin-top:13px"></div>
+          </details>
         </div>
       </div>
     </section>
@@ -1307,7 +1471,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
 <div class="veil" id="addVeil">
   <div class="dlg">
     <header>
-      <h3>添加账号</h3>
+      <h3>连接账号</h3><div class="pv-modal-subtitle">选择平台并授权账号，完成后会自动加入账号池</div>
       <div class="tabs" id="addTabs">
         <button class="tab on" data-tab="login">浏览器登录</button>
         <button class="tab" data-tab="import">导入 JSON</button>
@@ -1345,10 +1509,15 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         <div id="addReady" hidden>
           <div class="state">在浏览器打开以下链接并登录：</div>
           <div class="url" id="addUrl"></div>
-          <div class="state" id="addPoll"><span class="dots">等待授权完成，自动检测中</span></div>
+          <div class="pv-auth-progress" id="addPoll" role="status" aria-live="polite"><span class="pv-loader"></span><span id="addPollText">等待官方平台确认授权…</span></div>
+          <div class="pv-auth-explain" id="addInstructions"></div>
         </div>
         <div id="addDone" class="state ok" hidden></div>
-        <div id="addErr" class="state err" hidden></div>
+        <div id="addErr" class="pv-auth-error" role="alert" hidden></div>
+        <div class="pv-auth-retry" id="addRetryRow" hidden>
+          <button type="button" class="primary" id="btnRetryProviderLogin">重新授权</button>
+          <button type="button" id="btnUseQoderPat" hidden>改用 Qoder PAT</button>
+        </div>
       </div>
       <!-- 导入 JSON -->
       <div id="addTabImport" class="tab-panel" hidden>

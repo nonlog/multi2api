@@ -201,6 +201,14 @@ Multi2API 是一个自托管的 **OpenAI / Responses / Anthropic Messages 兼容
 
 ### 内置多 Provider 与模型统一映射
 
+
+### v1.13.4 · 多平台控制台与三模型自动统一
+
+- `账号池` 中内置 Provider 改为同一组圆角列表/平台筛选/账号操作菜单（深色和浅色共用令牌）；无需再逐行点击“额度”。进入页面时自动按平台查询额度，**最多两个并行查询**，每个上游结果短缓存三分钟；可手动强制刷新，避免瞬时请求打满上游。上游额度 API 失败不会自动将模型账号判为不可用，仍以实际模型请求验收。
+- Qoder 国际/国内授权在原生弹窗中提供官方设备授权和 PAT 登录两种路径。网页登录不等于已授权设备；UI 将区分设备等待/超时、job token 交换失败、网络失败和凭据落盘失败。切换平台会取消旧授权状态，PAT 不保存在浏览器本地。由于 OAuth/PAT 必须由用户本人完成，不能通过静态测试宣称已修好所有具体账号的失效登录。
+- `模型与档位 → 自动统一同名模型` 只允许选择 `deepseek-v4.1-flash`、`glm-5.3-flash`、`glm-5.3`。`model_mapping.auto_unify_models` 存储模型名单，**保存后需重启网关**。会对 CN/Global 同名 WorkBuddy 模型使用原账号池选择（会话粘性、冷却与限流保持原样）；当该模型在 WorkBuddy 所有地域均无可用账号时，可使用已有凭据且目录确实匹配同名模型的内置 Provider（ZCode、CodeArts 等），不会错误合并试用版或带日期后缀的其他模型。跨 Provider 自动选择只发生在写出响应前，**不对已经开始的 SSE 流进行中途跨平台重播**。
+- 指定 Provider 的旧名称仍可调用，不会修改、删除各平台账号或 Magpie 原始认证文件；配置以同一 Go 网关的 `/v1/models` 输出为准。NewAPI 渠道如果仍把模型映射到 `cn:...` / `global:...`，将绕过自动统一别名，应将目标映射改为三个裸模型名才会启用统一逻辑。
+
 **v1.13.2 原生管理面板整合**：在同一 `/panel/` 管理界面中，`账号池` 新增「多平台账号」区域，可列出各 Provider 的实际账号、检查授权状态、查询单平台额度、查看每日签到、禁用/启用及移除。顶部「添加账号」支持选择 WorkBuddy、ZCode、Qoder 国内/国际、千问办公、CodeArts，复用原有弹窗与认证密钥。ZCode、Qoder、千问办公按内置插件提供的真实设备授权 / OAuth 流程取得凭据；也可通过「导入 JSON」写入独立 Provider 凭据副本，不改写 Magpie。**CodeArts 官方 OAuth 使用 `127.0.0.1` 本机回调，VPS 的远程 Web 面板不提供不可用的浏览器登录按钮**，请先使用官方本地授权，再导入已授权凭据。已有账号无需重新导入；在「多平台账号」中会自动显示。Qoder 返回 HTTP 401 表示原授权失效，不能靠复制旧 Magpie 凭据恢复。
 
 「模型与档位」现在同时列出所有启用的 Provider 模型，可按平台筛选。底部「模型映射」支持可视化新增、编辑、移除：WorkBuddy CN/Global 同名模型仍使用现有 `model_mapping.aliases` 跨域账号池，单一第三方 Provider 模型可设置 `model_mapping.provider_aliases`（如 `"coding-fast":"zcode:GLM-5.3-Flash"`）。映射保存到同一个配置文件，**需重启网关后路由生效**；原始 Provider 模型 ID 始终保留，未加入的模型不会伪装成可用。所有模型仍由原网关的 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 统一提供。

@@ -12,6 +12,14 @@ test("all real bundled plugins initialize behind the same private Unix socket", 
   try {
     const mod = await import("./worker.mjs")
     server = await mod.start()
+    const secretInError = "do-not-leak-authorization-secret"
+    const qoderExchange = mod.loginFailure("Qoder 国际版", new Error("Qoder job token: status 401: " + secretInError))
+    expect(qoderExchange.code).toBe("token_exchange")
+    expect(qoderExchange.message.includes(secretInError)).toBe(false)
+    const qoderTimeout = mod.loginFailure("Qoder 国际版", new Error("Qoder: the sign-in timed out; start again"))
+    expect(qoderTimeout.code).toBe("device_timeout")
+    const qoderStorage = mod.loginFailure("Qoder 国际版", new Error("EACCES: write /private/secret-file"))
+    expect(qoderStorage.code).toBe("save_failed")
     const result = await fetch("http://localhost/health", { unix: socket })
     expect(result.status).toBe(200)
     const info = await result.json()
@@ -54,6 +62,19 @@ test("all real bundled plugins initialize behind the same private Unix socket", 
     const methods = await fetch("http://localhost/admin/methods?provider=qoder", { unix: socket })
     expect(methods.status).toBe(200)
     expect((await methods.json()).methods.length).toBeGreaterThan(0)
+    const qoderMethods = await fetch("http://localhost/admin/methods?provider=qoder", { unix: socket })
+    const methodData = await qoderMethods.json()
+    expect(methodData.methods.some(m => /PAT/i.test(m.label))).toBe(true)
+    const cancel = await fetch("http://localhost/admin/login/cancel", {
+      unix:socket, method:"POST", headers:{"content-type":"application/json"},
+      body:JSON.stringify({state:"not-a-valid-existing-login"}),
+    })
+    expect(cancel.status).toBe(200)
+    const cancelled = await fetch("http://localhost/admin/login/poll", {
+      unix:socket, method:"POST", headers:{"content-type":"application/json"},
+      body:JSON.stringify({state:"not-a-valid-existing-login"}),
+    })
+    expect(cancelled.status).toBe(404)
     const codearts = await fetch("http://localhost/admin/methods?provider=codearts", { unix: socket })
     expect((await codearts.json()).supported).toBe(false)
     const invalidMethod = await fetch("http://localhost/admin/methods?provider=garbage", { unix: socket })

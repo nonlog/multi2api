@@ -163,6 +163,31 @@ async function adminMethods(req) {
         message: p.message, options: p.options, placeholder: p.placeholder })) })) })
 }
 
+// Login failures can occur *after* the vendor's web page says "signed in".
+// Never return raw upstream response bodies: those may contain tokens/URLs.
+const PV_LOGIN_NAMES = {qoder:"Qoder 国际版", "qoder-cn":"Qoder 国内版", zcode:"ZCode", qwenwork:"千问办公", "qwenwork-enterprise":"千问企业", codearts:"CodeArts"}
+export function loginFailure(provider, error) {
+  const message = String(error?.message || "")
+  const job = message.match(/job token[^\n]*?status\s*(\d{3})/i)
+  const httpStatus = job ? Number(job[1]) : Number(error?.status)
+  if (/timed out|timeout/i.test(message)) return {
+    code: "device_timeout", message: `${provider} 设备授权超时。仅登录网页还不够，请在本次授权页面确认设备；也可选择 PAT 登录。`,
+  }
+  if (job || httpStatus === 401 || httpStatus === 403) return {
+    code: "token_exchange", message: `${provider} 授权后未能取得 API 会话令牌${httpStatus ? `（HTTP ${httpStatus}）` : ""}。请尝试 PAT 登录，或退出官网账号后重新授权设备。`,
+  }
+  if (/\bPAT\b|personal access token/i.test(message)) return {
+    code: "pat_rejected", message: `${provider} 拒绝了 PAT，请在官方账号设置中创建新的 PAT 并核对权限。`,
+  }
+  if (/EACCES|EPERM|ENOSPC|EROFS|write|rename/i.test(message)) return {
+    code: "save_failed", message: "授权已返回，但服务器保存私有凭据失败；请检查数据目录权限及空间。",
+  }
+  if (/request failed|fetch failed|ETIMEDOUT|ECONN|network/i.test(message)) return {
+    code: "network", message: `${provider} 授权服务连接失败。请检查 VPS 到官方认证端点的网络或代理配置。`,
+  }
+  return { code: "vendor_rejected", message: `${provider} 未完成设备令牌交换。请确认网页中已同意授权本次设备；若已同意，请改用 PAT 登录。` }
+}
+
 async function adminLoginStart(req) {
   const { provider: id, method: methodIndex = 0, inputs = {} } = await req.json()
   if (!PROVIDERS[id] || !Number.isInteger(methodIndex)) return responses(400, { error: "无效的登录方式" })
@@ -179,24 +204,37 @@ async function adminLoginStart(req) {
   if (!flow?.url || !/^https:\/\//i.test(flow.url) || typeof flow.callback !== "function")
     return responses(502, { error: "官方登录未返回安全的授权链接" })
   const state = randomUUID()
-  const entry = { provider: id, at: Date.now(), done: false, error: "", account: "" }
+  const entry = { provider: id, at: Date.now(), done: false, error: "", code: "", phase: "waiting", account: "" }
   browserLogins.set(state, entry)
   // Start the vendor's real PKCE/device callback once, without tying it to
   // the HTTP poll timeout; poll requests only observe the result.
   void (async () => {
     try {
       const result = await flow.callback()
-      if (result?.type !== "success" || !validCredential(result)) throw new Error("sign-in failed")
       if (browserLogins.get(state) !== entry) return
+      if (result?.type !== "success" || !validCredential(result)) throw new Error("vendor did not return a usable access token")
+      entry.phase = "saving"
       const record = { ...result, type: "oauth" }
       const key = saveAccountKey(id, record)
       await saveAuth(key, record, { enable: true })
       await forgetCheckin(key)
       entry.account = key
       entry.done = true
-    } catch { entry.error = "授权未成功或已过期，请重新登录" }
+      entry.phase = "done"
+    } catch (error) {
+      if (browserLogins.get(state) !== entry) return
+      const failure = loginFailure(PV_LOGIN_NAMES[id] || id, error)
+      entry.code = failure.code
+      entry.error = failure.message
+      entry.phase = "failed"
+    }
   })()
-  return responses(200, { state, url: flow.url, provider: id })
+  return responses(200, { state, url: flow.url, provider: id,
+    mode: /PAT/i.test(method.label || "") ? "pat" : "device",
+    instructions: id === "qoder" && !/PAT/i.test(method.label || "")
+      ? "登录 Qoder 网页后，请确认‘授权此设备’。登录官网并不等于设备已授权。"
+      : String(flow.instructions || "").slice(0, 180),
+  })
 }
 
 async function adminLoginPoll(req) {
@@ -207,10 +245,17 @@ async function adminLoginPoll(req) {
     browserLogins.delete(state)
     return responses(410, { error: "授权已过期，请重新开始" })
   }
-  const result = { done: entry.done, error: entry.error,
+  const result = { done: entry.done, error: entry.error, code: entry.code, phase: entry.phase,
     ...(entry.done ? { account: entry.account, provider: entry.provider } : {}) }
   if (entry.done || entry.error) browserLogins.delete(state)
   return responses(200, result)
+}
+
+async function adminLoginCancel(req) {
+  const { state } = await req.json()
+  if (typeof state !== "string" || state.length > 80) return responses(400, {error:"invalid login state"})
+  browserLogins.delete(state)
+  return responses(200, { cancelled: true })
 }
 
 async function adminImport(req) {
@@ -248,7 +293,7 @@ function calendarDay(now = new Date()) {
 
 function publicUsage(data) {
   const out = {}
-  for (const k of ["plan", "until", "user", "signIn", "error"]) {
+  for (const k of ["plan", "until", "user", "signIn", "balance", "error"]) {
     if (typeof data?.[k] === "string") out[k] = data[k].slice(0, 240)
   }
   out.windows = Array.isArray(data?.windows)
@@ -325,6 +370,9 @@ async function autoCheckin() {
 
 async function handleUsage(url) {
   const requested = url.searchParams.get("provider")
+  // Force bypass is only used by the explicit operator refresh button;
+  // automatic page refresh respects the 3-minute per-account cache.
+  const force = url.searchParams.get("refresh") === "1"
   const ids = requested ? [requested] : Object.keys(PROVIDERS)
   if (ids.some(id => !PROVIDERS[id])) return responses(400, { error: "unknown provider" })
   const accounts = ids.flatMap(id => providerKeys(id).map(key => ({ id, key })))
@@ -339,7 +387,7 @@ async function handleUsage(url) {
       const { id, key } = accounts[index]
       const cacheKey = id + "\0" + key
       const cached = usageCache.get(cacheKey)
-      if (cached && Date.now() - cached.at < 180_000) {
+      if (!force && cached && Date.now() - cached.at < 180_000) {
         result[index] = { provider: id, account: key, ...cached.value, cached: true }
         continue
       }
@@ -505,6 +553,7 @@ async function dispatch(req) {
   if (req.method === "GET" && path === "/admin/methods") return adminMethods(req)
   if (req.method === "POST" && path === "/admin/login/start") return adminLoginStart(req)
   if (req.method === "POST" && path === "/admin/login/poll") return adminLoginPoll(req)
+  if (req.method === "POST" && path === "/admin/login/cancel") return adminLoginCancel(req)
   if (req.method === "POST" && path === "/admin/import") return adminImport(req)
   if (req.method === "POST" && path === "/admin/account/action") return adminAccountAction(req)
   if (req.method === "GET" && path === "/health") {

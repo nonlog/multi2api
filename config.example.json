@@ -48,7 +48,8 @@
         "global:deepseek-v4.1-flash"
       ]
     },
-    "provider_aliases": {}
+    "provider_aliases": {},
+    "auto_unify_models": ["deepseek-v4.1-flash", "glm-5.3-flash", "glm-5.3"]
   },
   "providers": {
     "enabled": false,

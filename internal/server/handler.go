@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 
 	"sync"
@@ -67,6 +68,7 @@ type Config struct {
 	// When both cn and global are configured, normal pool selection spans both.
 	ModelAliases    map[string][]string
 	ProviderAliases map[string]string
+	AutoUnifyModels []string
 
 	// Optional built-in ZCode, Qoder, QwenWork and CodeArts plugins.
 	ProviderHost *providerhost.Host
@@ -520,11 +522,16 @@ func (h *Handler) modelList() []map[string]any {
 			out = append(out, entry)
 		}
 	}
-	out = mapModelListing(out, h.cfg.ModelAliases)
+	workbuddyDiscovered := append([]map[string]any(nil), out...)
+	aliases := autoWorkBuddyAliases(h.cfg.ModelAliases, h.cfg.AutoUnifyModels, workbuddyDiscovered)
+	out = mapModelListing(out, aliases)
+	var providers []map[string]any
 	if h.cfg.ProviderHost != nil {
-		out = append(out, h.cfg.ProviderHost.Models(context.Background())...)
+		providers = h.cfg.ProviderHost.Models(context.Background())
+		out = append(out, providers...)
 	}
 	out = mapProviderAliases(out, h.cfg.ProviderAliases)
+	out = attachAutoUnifyListing(out, append(workbuddyDiscovered, providers...), h.cfg.AutoUnifyModels)
 	return out
 }
 
@@ -622,8 +629,17 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.Unmarshal(body, &peek)
 	selected := peek.Model
+	// Explicit operator overrides win. Auto-unification otherwise keeps the
+	// WorkBuddy CN/Global account pool and uses exact vendor identity only
+	// when neither WorkBuddy realm has an eligible account.
 	if target := h.cfg.ProviderAliases[selected]; target != "" {
 		selected = target
+	} else if slices.Contains(h.cfg.AutoUnifyModels, selected) && h.cfg.ProviderHost != nil &&
+		len(h.cfg.Pool.AvailableUIDsForModelRealm(selected, "cn")) == 0 &&
+		(!h.cfg.GlobalEnabled || len(h.cfg.Pool.AvailableUIDsForModelRealm(selected, "global")) == 0) {
+		if alternative := selectAutoVendor(selected, h.cfg.ProviderHost.Models(r.Context())); alternative != "" {
+			selected = alternative
+		}
 	}
 	if provider, bare, ok := providerhost.ModelProvider(selected); ok {
 		if h.cfg.ProviderHost == nil {
@@ -645,7 +661,16 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// realm 前缀解析（D6）：model 名可能带 "[realm:]" 前缀。剥出 realm + bareModel，
 	// bareModel 用于选号/粘性/出站 body 重写（前缀是网关侧路由协议，上游只认裸名）。
 	// 裸名 → ("cn", 原串)，CN 现状零回归。
-	realm, bareModel := ResolveMappedModel(peek.Model, h.cfg.ModelAliases)
+	aliases := h.cfg.ModelAliases
+	if slices.Contains(h.cfg.AutoUnifyModels, peek.Model) && h.cfg.ProviderAliases[peek.Model] == "" {
+		aliases = make(map[string][]string, len(h.cfg.ModelAliases)+1)
+		for k, v := range h.cfg.ModelAliases { aliases[k] = v }
+		if len(aliases[peek.Model]) == 0 {
+			if len(h.cfg.Pool.AvailableUIDsForModelRealm(peek.Model,"cn")) > 0 { aliases[peek.Model] = append(aliases[peek.Model], "cn:"+peek.Model) }
+			if h.cfg.GlobalEnabled && len(h.cfg.Pool.AvailableUIDsForModelRealm(peek.Model,"global")) > 0 { aliases[peek.Model] = append(aliases[peek.Model], "global:"+peek.Model) }
+		}
+	}
+	realm, bareModel := ResolveMappedModel(peek.Model, aliases)
 	modelRate := ""
 	if h.cfg.Upstream != nil {
 		modelRate = h.cfg.Upstream.ModelRate(realm, bareModel)

@@ -32,7 +32,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.13.3-panel"
+const appVersion = "1.13.4-panel"
 
 // usagePathFor 由 state 文件路径推出用量文件路径：同目录、文件名 usage.json。
 // 这样 config 里改 state_file 时用量数据跟着走，不需要额外配置项。
@@ -328,6 +328,7 @@ func main() {
 		GlobalEnabled:   cfg.Global.Enabled,
 		ModelAliases:    cfg.ModelMapping.Aliases,
 		ProviderAliases: cfg.ModelMapping.ProviderAliases,
+		AutoUnifyModels: cfg.ModelMapping.AutoUnifyModels,
 		ProviderHost:    externalProviders,
 	})
 
@@ -543,7 +544,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 // 恒返回完整清单中的"与当前进程装配期依赖相关"的项——面板据此提示用户。
 func restartRequiredFields(c *Config) []string {
 	var out []string
-	out = append(out, "model_mapping.aliases", "model_mapping.provider_aliases", "providers.enabled", "providers.auth_file", "providers.auto_checkin")
+	out = append(out, "model_mapping.aliases", "model_mapping.provider_aliases", "model_mapping.auto_unify_models", "providers.enabled", "providers.auth_file", "providers.auto_checkin")
 	// 这些字段在进程内被监听地址/HTTP client/目录句柄等装配期对象捕获。
 	if c.Listen != "" {
 		out = append(out, "listen")

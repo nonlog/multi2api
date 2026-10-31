@@ -24,6 +24,8 @@ func TestUnifiedProviderPanelLinksAndAuthentication(t *testing.T) {
 		`id="addProvider"`, `id="providerLoginMethod"`,
 		`id="providerCredential"`, `id="modelAliasBox"`,
 		`id="aliasTarget"`, `id="aliasRows"`,
+		`id="btnAutoUnifySave"`, `id="autoUnifyChoices"`,
+		`id="providerAccountBody"`, `id="btnUseQoderPat"`,
 		`<option value="codearts">`, `<option value="qoder-cn">`,
 	} {
 		if !strings.Contains(page.Body.String(), marker) {
