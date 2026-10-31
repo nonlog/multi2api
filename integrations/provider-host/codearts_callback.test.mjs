@@ -59,7 +59,7 @@ test('expired CodeArts quota credential renews once before signed usage read and
     fetch:async (url, init) => {
       const u=String(url)
       if (u===ca.STS_TOKEN_ENDPOINT) {rotations++;return new Response(JSON.stringify(validToken()),{status:200})}
-      if (u===ca.SNAP_STATISTICS_URL) {stats++;return new Response(JSON.stringify({code:0,data:{package:{package_name_cn:'单元测试套餐'},metrics:[]}}),{status:200})}
+      if (u===ca.SNAP_STATISTICS_URL) {stats++;return new Response(JSON.stringify({code:0,data:{package:{package_name_cn:'单元测试套餐'},metrics:[{name:'usageTotalPackageCredit',package_credit_amount:100,package_credit_remain:80}]}}),{status:200})}
       return new Response(JSON.stringify({code:404,message:'not in test'}),{status:404})
     },
     ledgerPath:'/dev/null',
