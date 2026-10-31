@@ -1632,6 +1632,11 @@ async function refreshProviderAdd() {
   $('addLoad').hidden = true; $('addReady').hidden = true;
   $('addDone').hidden = true; $('addErr').hidden = true; $('addRetryRow').hidden = true;
   $('addInstructions').textContent = '';
+  $('codeartsManual').hidden = true;
+  $('codeartsCallbackInput').value = '';
+  $('codeartsCallbackStatus').textContent = '';
+  $('codeartsNextStep').hidden = true;
+  $('codeartsNextStep').removeAttribute('href');
   $('btnStartLogin').disabled = !isWorkBuddy;
   $('btnStartLogin').hidden = !$('addTabImport').hidden;
   $('btnCopyUrl').hidden = true; $('btnOpenUrl').hidden = true;
@@ -1735,7 +1740,13 @@ async function startProviderLogin() {
     $('addUrl').textContent = result.url || '';
     $('addUrl').hidden = result.mode === 'pat';
     $('addInstructions').textContent = result.instructions || '';
+    $('codeartsManual').hidden = result.manual_callback !== true;
+    $('codeartsCallbackStatus').textContent = '';
+    $('codeartsCallbackInput').value = '';
+    $('codeartsNextStep').hidden = true;
+    $('codeartsNextStep').removeAttribute('href');
     $('addPollText').textContent = result.mode === 'pat' ? '正在验证 PAT 并保存账号…'
+      : result.manual_callback ? '等待华为回调。粘贴授权后浏览器地址栏里的回调链接。'
       : '等待官网确认设备授权；完成后自动同步账号…';
     $('providerLoginPick').hidden = true;
     $('addRetryRow').hidden = true;
@@ -1750,6 +1761,34 @@ async function startProviderLogin() {
     $('addErr').hidden = false; $('addErr').textContent = e.message;
   }
 }
+$('btnSubmitCodeartsCallback').onclick = async () => {
+  if (pvLoginProvider !== 'codearts' || !loginState) return;
+  const value = $('codeartsCallbackInput').value.trim();
+  if (!value) { $('codeartsCallbackStatus').textContent = '请粘贴完整回调地址或授权码。'; return; }
+  const state = loginState;
+  const button = $('btnSubmitCodeartsCallback');
+  button.disabled = true;
+  try {
+    const answer = await api('providers/login/callback', {
+      method:'POST', body:JSON.stringify({state, url:value}),
+    });
+    if (loginState !== state) return;
+    $('codeartsCallbackInput').value = '';
+    if (answer.next_url) {
+      // The vendor may use a 2-hop native callback: secret/redirect, then
+      // code. It is validated server-side against Huawei's HTTPS domains.
+      const link = $('codeartsNextStep');
+      link.href = answer.next_url;
+      link.hidden = false;
+      $('codeartsCallbackStatus').textContent = '请点击「继续华为授权」完成下一步，再粘贴含 code= 的最终回调地址。';
+    } else {
+      $('codeartsNextStep').hidden = true;
+      $('codeartsNextStep').removeAttribute('href');
+      $('codeartsCallbackStatus').textContent = '回调已接收，网关正在向华为交换令牌。';
+    }
+  } catch (e) { $('codeartsCallbackStatus').textContent = '回调未提交：' + e.message; }
+  finally { button.disabled = false; }
+};
 function stopPoll() { if (loginTimer) { clearTimeout(loginTimer); clearInterval(loginTimer); loginTimer = null; } }
 function scheduleLoginPoll() {
   stopPoll();
@@ -1803,7 +1842,9 @@ async function pollLogin() {
 }
 function closeAdd() {
   cancelProviderLogin(); loginGeneration++; stopPoll(); loginState = null; pvLoginProvider = '';
-  $('providerCredential').value = ''; $('addVeil').classList.remove('on');
+  $('providerCredential').value = ''; $('codeartsCallbackInput').value = '';
+  $('codeartsNextStep').removeAttribute('href'); $('codeartsManual').hidden = true;
+  $('addVeil').classList.remove('on');
 }
 $('btnRetryProviderLogin').onclick = () => {
   $('addErr').hidden = true; $('addRetryRow').hidden = true;

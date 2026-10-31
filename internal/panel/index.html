@@ -768,6 +768,14 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
 .auto-map-advanced[open] summary {margin-bottom:18px}
 .auto-map-advanced .alias-grid {margin-top:8px}
 @media(max-width:930px){.auto-map-choices{grid-template-columns:1fr}.auto-map-intro{align-items:start;flex-wrap:wrap}}
+
+#addVeil .codearts-manual { margin-top: 15px; border: 1px solid var(--line-soft); background: var(--surface-2); padding: 15px; border-radius: 12px; }
+#addVeil .codearts-manual .fld { margin: 0; }
+#addVeil .codearts-manual input { width: 100%; min-width: 0; }
+#addVeil .codearts-manual-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+#addVeil .codearts-manual-actions button { min-height: 35px; padding: 7px 13px; border-radius: 9px; }
+#addVeil #codeartsNextStep { font-size: 12.5px; color: var(--accent); text-decoration: underline; }
+#addVeil #codeartsCallbackStatus { margin-top: 8px; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -1511,6 +1519,17 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           <div class="url" id="addUrl"></div>
           <div class="pv-auth-progress" id="addPoll" role="status" aria-live="polite"><span class="pv-loader"></span><span id="addPollText">等待官方平台确认授权…</span></div>
           <div class="pv-auth-explain" id="addInstructions"></div>
+          <div id="codeartsManual" class="codearts-manual" hidden>
+            <label class="fld"><span class="lb">华为浏览器回调地址</span>
+              <input id="codeartsCallbackInput" type="text" autocomplete="off" spellcheck="false" placeholder="粘贴 http://127.0.0.1:端口/oauth/callback?code=..." />
+            </label>
+            <div class="pv-auth-guidance">华为授权后，浏览器可能显示 127.0.0.1 无法连接。这是远程网关的正常限制。请从浏览器地址栏复制完整回调链接（含 code=），粘贴到这里。若首次回调包含 secret= 和 redirect=，请先提交并点击「继续华为授权」。授权码只发送到当前网关，不保存在浏览器本地。</div>
+            <div class="codearts-manual-actions">
+              <button type="button" id="btnSubmitCodeartsCallback" class="primary">提交授权回调</button>
+              <a id="codeartsNextStep" target="_blank" rel="noopener noreferrer" hidden>继续华为授权</a>
+            </div>
+            <div id="codeartsCallbackStatus" class="pa-note" role="status" aria-live="polite"></div>
+          </div>
         </div>
         <div id="addDone" class="state ok" hidden></div>
         <div id="addErr" class="pv-auth-error" role="alert" hidden></div>

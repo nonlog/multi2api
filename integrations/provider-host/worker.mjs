@@ -146,7 +146,6 @@ async function adminAccounts() {
 // protocol headers, token exchanges or synthetic device IDs in the panel.
 async function loginMethods(id) {
   if (!PROVIDERS[id]) return []
-  if (id === "codearts") return [] // callback targets the VPS loopback; cannot work from a remote browser
   const plugin = await PROVIDERS[id]({ client: runtimeClient("__login_" + id) })
   return (plugin.auth?.methods || []).map((m, index) => ({ ...m, index }))
     .filter(m => m.type === "oauth" && typeof m.authorize === "function" &&
@@ -168,6 +167,13 @@ async function adminMethods(req) {
 const PV_LOGIN_NAMES = {qoder:"Qoder 国际版", "qoder-cn":"Qoder 国内版", zcode:"ZCode", qwenwork:"千问办公", "qwenwork-enterprise":"千问企业", codearts:"CodeArts"}
 export function loginFailure(provider, error) {
   const message = String(error?.message || "")
+  if (provider === "华为 CodeArts") {
+    if (/timed out|timeout/i.test(message)) return { code:"callback_timeout",
+      message:"华为授权回调超时；请重新授权并将浏览器最后显示的本地回调地址粘贴到面板。" }
+    if (/STS5\.1806|invalid_grant|invalid authorization code/i.test(message)) return { code:"authorization_code_expired",
+      message:"华为拒绝了授权码或该授权码已经使用。请重新发起本次授权并粘贴新的回调地址。" }
+    return { code:"oauth_exchange_failed", message:"华为 OAuth 令牌交换失败，请重新授权或检查官方平台登录状态。" }
+  }
   const job = message.match(/job token[^\n]*?status\s*(\d{3})/i)
   const httpStatus = job ? Number(job[1]) : Number(error?.status)
   if (/timed out|timeout/i.test(message)) return {
@@ -192,7 +198,10 @@ async function adminLoginStart(req) {
   const { provider: id, method: methodIndex = 0, inputs = {} } = await req.json()
   if (!PROVIDERS[id] || !Number.isInteger(methodIndex)) return responses(400, { error: "无效的登录方式" })
   for (const [key, entry] of browserLogins) {
-    if (Date.now() - entry.at > 16 * 60_000) browserLogins.delete(key)
+    if (Date.now() - entry.at > 16 * 60_000) {
+      entry.cancel?.()
+      browserLogins.delete(key)
+    }
   }
   if (browserLogins.size >= 12) return responses(429, { error: "登录任务过多，请稍后重试" })
   const methods = await loginMethods(id)
@@ -204,7 +213,9 @@ async function adminLoginStart(req) {
   if (!flow?.url || !/^https:\/\//i.test(flow.url) || typeof flow.callback !== "function")
     return responses(502, { error: "官方登录未返回安全的授权链接" })
   const state = randomUUID()
-  const entry = { provider: id, at: Date.now(), done: false, error: "", code: "", phase: "waiting", account: "" }
+  const entry = { provider: id, at: Date.now(), done: false, error: "", code: "", phase: "waiting", account: "",
+    submitManual: typeof flow.submitManual === "function" ? flow.submitManual : null,
+    cancel: typeof flow.cancel === "function" ? flow.cancel : null }
   browserLogins.set(state, entry)
   // Start the vendor's real PKCE/device callback once, without tying it to
   // the HTTP poll timeout; poll requests only observe the result.
@@ -212,7 +223,8 @@ async function adminLoginStart(req) {
     try {
       const result = await flow.callback()
       if (browserLogins.get(state) !== entry) return
-      if (result?.type !== "success" || !validCredential(result)) throw new Error("vendor did not return a usable access token")
+      if (result?.type !== "success") throw new Error(String(result?.error || "vendor rejected sign-in").slice(0, 200))
+      if (!validCredential(result)) throw new Error("vendor did not return a usable access token")
       entry.phase = "saving"
       const record = { ...result, type: "oauth" }
       const key = saveAccountKey(id, record)
@@ -230,11 +242,44 @@ async function adminLoginStart(req) {
     }
   })()
   return responses(200, { state, url: flow.url, provider: id,
-    mode: /PAT/i.test(method.label || "") ? "pat" : "device",
+    manual_callback: !!entry.submitManual,
+    mode: id === "codearts" ? "manual_oauth" : /PAT/i.test(method.label || "") ? "pat" : "device",
     instructions: id === "qoder" && !/PAT/i.test(method.label || "")
       ? "登录 Qoder 网页后，请确认‘授权此设备’。登录官网并不等于设备已授权。"
       : String(flow.instructions || "").slice(0, 180),
   })
+}
+
+// OOB handoff for CodeArts' fixed 127.0.0.1 OAuth redirect. The callback
+// remains bound to the stateful PKCE/DPoP flow created by this worker; it is
+// never used as a generic fetch, redirector, or URL proxy.
+async function adminLoginCallback(req) {
+  let input
+  try { input = await req.json() } catch { return responses(400, {error:"invalid JSON"}) }
+  const state = String(input?.state || "")
+  const value = input?.url
+  if (state.length > 80 || typeof value !== "string" || value.length > 8192)
+    return responses(400, {error:"invalid callback input"})
+  const entry = browserLogins.get(state)
+  if (!entry || entry.provider !== "codearts" || !entry.submitManual)
+    return responses(404, {error:"CodeArts authorization session was not found"})
+  if (Date.now() - entry.at > 16 * 60_000) {
+    entry.cancel?.()
+    browserLogins.delete(state)
+    return responses(410, {error:"华为授权已过期，请重新开始"})
+  }
+  if (entry.done || entry.error || entry.phase === "saving")
+    return responses(409, {error:"this authorization has already finished"})
+  try {
+    const outcome = entry.submitManual(value)
+    if (outcome.submitted) entry.phase = "saving"
+    return responses(200, {ok:true, submitted:outcome.submitted===true,
+      ...(outcome.next_url ? {next_url:outcome.next_url} : {})})
+  } catch (error) {
+    // Only the plugin's fixed validation messages are returned; never include
+    // raw callback URL, authorization code or vendor token response bodies.
+    return responses(400, {error:String(error?.message || "invalid callback").slice(0,180)})
+  }
 }
 
 async function adminLoginPoll(req) {
@@ -242,6 +287,7 @@ async function adminLoginPoll(req) {
   const entry = browserLogins.get(state)
   if (!entry) return responses(404, { error: "登录会话不存在或已经过期" })
   if (Date.now() - entry.at > 16 * 60_000) {
+    entry.cancel?.()
     browserLogins.delete(state)
     return responses(410, { error: "授权已过期，请重新开始" })
   }
@@ -254,6 +300,7 @@ async function adminLoginPoll(req) {
 async function adminLoginCancel(req) {
   const { state } = await req.json()
   if (typeof state !== "string" || state.length > 80) return responses(400, {error:"invalid login state"})
+  browserLogins.get(state)?.cancel?.()
   browserLogins.delete(state)
   return responses(200, { cancelled: true })
 }
@@ -398,7 +445,7 @@ async function handleUsage(url) {
         else {
           const read = await Promise.race([
             plugin.auth.usage(async () => credentials[key], provider),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("quota request timeout")), 30_000)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("quota request timeout")), id === "codearts" ? 75_000 : 30_000)),
           ])
           value = publicUsage(read)
         }
@@ -553,6 +600,7 @@ async function dispatch(req) {
   if (req.method === "GET" && path === "/admin/methods") return adminMethods(req)
   if (req.method === "POST" && path === "/admin/login/start") return adminLoginStart(req)
   if (req.method === "POST" && path === "/admin/login/poll") return adminLoginPoll(req)
+  if (req.method === "POST" && path === "/admin/login/callback") return adminLoginCallback(req)
   if (req.method === "POST" && path === "/admin/login/cancel") return adminLoginCancel(req)
   if (req.method === "POST" && path === "/admin/import") return adminImport(req)
   if (req.method === "POST" && path === "/admin/account/action") return adminAccountAction(req)

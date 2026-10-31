@@ -25,6 +25,7 @@ func TestUnifiedProviderPanelLinksAndAuthentication(t *testing.T) {
 		`id="addProvider"`, `id="providerLoginMethod"`,
 		`id="providerCredential"`, `id="modelAliasBox"`,
 		`id="aliasTarget"`, `id="aliasRows"`,
+		`id="codeartsManual"`, `id="codeartsCallbackInput"`, `id="btnSubmitCodeartsCallback"`,
 		`id="btnAutoUnifySave"`, `id="autoUnifyChoices"`,
 		`id="providerAccountBody"`, `id="btnUseQoderPat"`,
 		`<option value="codearts">`, `<option value="qoder-cn">`,
@@ -38,6 +39,7 @@ func TestUnifiedProviderPanelLinksAndAuthentication(t *testing.T) {
 		{"GET", "/panel/api/providers/methods?provider=qoder"},
 		{"POST", "/panel/api/providers/login/start"},
 		{"POST", "/panel/api/providers/login/poll"},
+		{"POST", "/panel/api/providers/login/callback"},
 		{"POST", "/panel/api/providers/import"},
 		{"POST", "/panel/api/providers/account/action"},
 	} {

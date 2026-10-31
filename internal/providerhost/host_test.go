@@ -58,6 +58,7 @@ func TestProviderAdminAllowlistAndMethodQuery(t *testing.T) {
 		{"GET", "methods?provider=qoder&secret=steal"},
 		{"GET", "login/start"},
 		{"GET", "login/cancel"},
+		{"GET", "login/callback"},
 		{"POST", "login/cancel?state=random"},
 	} {
 		if _, _, err := h.Admin(context.Background(), input.method, input.endpoint, nil); err == nil {

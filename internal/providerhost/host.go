@@ -188,7 +188,7 @@ func (h *Host) Admin(ctx context.Context, method, endpoint string, body []byte) 
 	}
 	allowed := map[string]string{
 		"accounts": "GET", "methods": "GET", "login/start": "POST",
-		"login/poll": "POST", "login/cancel": "POST", "import": "POST", "account/action": "POST",
+		"login/poll": "POST", "login/callback": "POST", "login/cancel": "POST", "import": "POST", "account/action": "POST",
 	}
 	bareEndpoint := strings.SplitN(endpoint, "?", 2)[0]
 	if allowed[bareEndpoint] != method || len(body) > 96<<10 {

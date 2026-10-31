@@ -89,7 +89,12 @@ func Stream(w io.Writer, src io.Reader, meta *Meta, model string) error {
 	// Buffer recovered invocations until EOF to avoid duplicating native
 	// tool_calls that might appear later in the same stream.
 	reasonRepair := reasoningMarkupRepair(meta)
+	// Content can contain the very same native tool markup, fragmented across
+	// SSE chunks. Checking each delta independently leaks tool instructions as
+	// assistant text and makes Codex stop without calling the declared tool.
+	contentRepair := reasoningMarkupRepair(meta)
 	var recoveredReasonCalls []upstream.MarkupCall
+	var recoveredContentCalls []upstream.MarkupCall
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") {
@@ -140,16 +145,22 @@ func Stream(w io.Writer, src io.Reader, meta *Meta, model string) error {
 			}
 		}
 		if piece := stringOf(delta["content"]); piece != "" {
-			if st.meta != nil && len(st.meta.Tools) > 0 && HasRejectedNativeToolMarkup(piece) {
-				// The upstream produced a *tool invocation* as plain text, but
-				// the repair layer could not safely match it to a declared tool.
-				// Never deliver a false successful turn to Codex.
-				failure := st.failWithCode("invalid_tool_call",
-					"upstream model emitted a malformed or undeclared tool invocation; retry using an exact declared tool name")
-				return errors.Join(ErrRejectedToolCall, failure)
+			if contentRepair != nil {
+				var recovered []upstream.MarkupCall
+				piece, recovered = contentRepair.Feed(piece)
+				recoveredContentCalls = append(recoveredContentCalls, recovered...)
+				if contentRepair.Rejected() > 0 {
+					reason, name := contentRepair.LastRejection()
+					log.Printf("WARN: [responses] rejected content tool markup (reason=%s, tool=%q)", reason, name)
+					failure := st.failWithCode("invalid_tool_call",
+						"upstream emitted a malformed or undeclared tool invocation in content")
+					return errors.Join(ErrRejectedToolCall, failure)
+				}
 			}
-			if err := st.emitTextDelta(piece); err != nil {
-				return err
+			if piece != "" {
+				if err := st.emitTextDelta(piece); err != nil {
+					return err
+				}
 			}
 		}
 		if calls, ok := delta["tool_calls"].([]any); ok {
@@ -165,10 +176,31 @@ func Stream(w io.Writer, src io.Reader, meta *Meta, model string) error {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return err
+		return st.failWithCode("upstream_stream_error", "upstream stream interrupted before completion")
 	}
 	if st.frames == 0 {
+		_ = st.failWithCode("upstream_stream_error", "upstream stream contained no assistant output")
 		return ErrEmptyStream
+	}
+	// A TCP EOF, an HTTP 200, and even an SSE [DONE] are not a completed
+	// response. Only an upstream choice.finish_reason confirms that generation
+	// finished. This matters when a provider disconnects during a tool call.
+	if st.finish == "" {
+		return st.failWithCode("upstream_truncated", "upstream stream ended without finish_reason; retry the turn")
+	}
+	if contentRepair != nil {
+		tail := contentRepair.Flush()
+		if reasonMarkupTailInvalid(contentRepair, tail) {
+			log.Printf("WARN: [responses] incomplete or rejected content tool markup at stream end")
+			failure := st.failWithCode("invalid_tool_call",
+				"upstream ended with an incomplete or undeclared content tool invocation")
+			return errors.Join(ErrRejectedToolCall, failure)
+		}
+		if tail != "" {
+			if err := st.emitTextDelta(tail); err != nil {
+				return err
+			}
+		}
 	}
 	if reasonRepair != nil {
 		tail := reasonRepair.Flush()
@@ -183,8 +215,16 @@ func Stream(w io.Writer, src io.Reader, meta *Meta, model string) error {
 				return err
 			}
 		}
-		if len(st.tools) == 0 && len(recoveredReasonCalls) > 0 {
-			for i, call := range recoveredReasonCalls {
+	}
+	// Native upstream tool_calls take precedence. When a tool appears as DSML
+	// in BOTH channels, recover one canonical set instead of running it twice.
+	if len(st.tools) == 0 {
+		recovered := recoveredReasonCalls
+		if len(recovered) == 0 {
+			recovered = recoveredContentCalls
+		}
+		if len(recovered) > 0 {
+			for i, call := range recovered {
 				name, _ := ResolveNamespacedName(call.Name, meta.NamespaceMap)
 				tc := map[string]any{
 					"index": float64(i), "id": newID("call_"),
@@ -194,7 +234,7 @@ func Stream(w io.Writer, src io.Reader, meta *Meta, model string) error {
 					return err
 				}
 			}
-			log.Printf("INFO: [responses] recovered %d strictly declared tool call(s) from reasoning_content", len(recoveredReasonCalls))
+			log.Printf("INFO: [responses] recovered %d strictly declared tool call(s) from native markup", len(recovered))
 		}
 	}
 	return st.finalize()
@@ -566,6 +606,7 @@ func (st *streamState) finalize() error {
 	final := st.responseObject(status)
 	if status == "incomplete" {
 		final["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
+		return st.emit("response.incomplete", map[string]any{"response": final})
 	}
 	return st.emit("response.completed", map[string]any{"response": final})
 }

@@ -780,6 +780,36 @@ const buildPortalLoginResultUrl = (ok) =>
  * the sign-in at once, with the portal's own words when it gave any. The
  * redirect target is always that page, never a parameter of the request.
  */
+// Huawei registers CodeArts as a *native* OAuth client: its redirect host is
+// always 127.0.0.1 on the BROWSER's computer, not on the remote VPS. The
+// browser can therefore copy the failed loopback URL into the authenticated
+// panel; the same PKCE/DPoP verifier exchanges the code on the VPS.
+function normalizeManualCallback(input, port) {
+  const raw = String(input ?? "").trim()
+  if (!raw || raw.length > 8192 || /[\r\n]/.test(raw)) throw new Error("CodeArts: paste the full callback URL containing code=")
+  let u
+  if (raw.startsWith("?")) u = new URL(`http://127.0.0.1:${port}${REDIRECT_PATH}${raw}`)
+  else if (/^https?:\/\//i.test(raw)) u = new URL(raw)
+  else if (/^[a-zA-Z0-9_+./=~-]{1,4096}$/.test(raw)) u = new URL(`http://127.0.0.1:${port}${REDIRECT_PATH}?code=${encodeURIComponent(raw)}`)
+  else throw new Error("CodeArts: paste a loopback callback URL or a plain authorization code")
+  if (u.protocol !== "http:" || u.hostname !== "127.0.0.1" || u.port !== String(port) ||
+      u.pathname !== REDIRECT_PATH || u.username || u.password || u.hash) {
+    throw new Error("CodeArts: callback host, path or port does not match this login session")
+  }
+  return u.searchParams
+}
+
+function safePortalRedirect(raw) {
+  let u
+  try { u = new URL(raw) } catch { throw new Error("CodeArts: invalid intermediate portal redirect") }
+  if (u.protocol !== "https:" || u.username || u.password ||
+      !(u.hostname === "codearts.huaweicloud.com" || u.hostname.endsWith(".huaweicloud.com") ||
+        u.hostname.endsWith(".myhuaweicloud.com"))) {
+    throw new Error("CodeArts: intermediate redirect did not point to a Huawei Cloud portal")
+  }
+  return u.href
+}
+
 function startOAuthCallbackServer(pkce, keyPair, fetcher) {
   let resolveResult
   let rejectResult
@@ -788,9 +818,38 @@ function startOAuthCallbackServer(pkce, keyPair, fetcher) {
     rejectResult = reject
   })
   let answered = false
+  let callbackPort = 0
+
+  // A successful code is accepted just once. Both automatic browser traffic
+  // and the remote-panel OOB handoff MUST converge on this same exchange.
+  const acceptCode = (code, reply = () => {}) => {
+    if (answered) throw new Error("CodeArts: this authorization has already been submitted")
+    answered = true
+    void exchangeAuthorizationCode(code, pkce.codeVerifier, callbackPort, keyPair, fetcher).then(
+      (token) => {
+        const cred = credentialFromTokenResponse(token, pkce.codeVerifier, keyPair)
+        resolveResult({ access: JSON.stringify(cred), expires: expiresFromCredential(cred) })
+        reply(true)
+      },
+      (error) => { rejectResult(error); reply(false) },
+    )
+  }
+
+  const submitManual = (input) => {
+    const params = normalizeManualCallback(input, callbackPort)
+    const code = params.get("code")
+    if (code) {
+      acceptCode(code)
+      return { submitted: true }
+    }
+    const redirect = params.get("redirect")
+    if (params.has("secret") && redirect) {
+      return { next_url: safePortalRedirect(redirect) }
+    }
+    throw new Error("CodeArts: the callback does not contain code=; finish portal authorization first")
+  }
 
   const server = createServer((request, response) => {
-    // The path as sent, not as a URL would normalise it (`/oauth/./callback`).
     const raw = request.url ?? "/"
     const query = raw.indexOf("?")
     if ((query < 0 ? raw : raw.slice(0, query)) !== REDIRECT_PATH) {
@@ -801,35 +860,36 @@ function startOAuthCallbackServer(pkce, keyPair, fetcher) {
       response.writeHead(405, { Allow: "GET" }).end("Method not allowed")
       return
     }
-    // One sign-in, one callback: another one for the same flow is refused.
     if (answered) {
       response.writeHead(409).end("This sign-in is already being completed")
       return
     }
-    answered = true
-    const url = new URL(raw, `http://127.0.0.1:${request.socket.localPort}`)
+    const url = new URL(raw, `http://127.0.0.1:${callbackPort}`)
     const code = url.searchParams.get("code")
     if (!code) {
+      const intermediate = url.searchParams.get("redirect")
+      if (url.searchParams.has("secret") && intermediate) {
+        try { response.writeHead(307, { Location: safePortalRedirect(intermediate) }).end() }
+        catch { response.writeHead(400).end("Invalid portal redirect") }
+        return
+      }
+      answered = true
       response.writeHead(307, { Location: buildPortalLoginResultUrl(false) }).end()
       const said = firstOf(url.searchParams.get("error_description"), url.searchParams.get("error"))
-      rejectResult(new Error(`CodeArts sign-in failed: ${said || "the callback came back without an authorization code"}`))
+      rejectResult(new Error(`CodeArts sign-in failed: ${said || "callback missing authorization code"}`))
       return
     }
-    const port = request.socket.localPort ?? 0
-    void exchangeAuthorizationCode(code, pkce.codeVerifier, port, keyPair, fetcher).then(
-      (token) => {
-        response.writeHead(307, { Location: buildPortalLoginResultUrl(true) }).end()
-        const cred = credentialFromTokenResponse(token, pkce.codeVerifier, keyPair)
-        resolveResult({ access: JSON.stringify(cred), expires: expiresFromCredential(cred) })
-      },
-      (error) => {
-        response.writeHead(307, { Location: buildPortalLoginResultUrl(false) }).end()
-        rejectResult(error)
-      },
-    )
+    acceptCode(code, (ok) => {
+      if (!response.writableEnded) response.writeHead(307, { Location: buildPortalLoginResultUrl(ok) }).end()
+    })
   })
 
-  return listenOnCallbackPort(server).then((port) => ({ port, server, result }))
+  return listenOnCallbackPort(server).then((port) => {
+    callbackPort = port
+    return { port, server, result, submitManual,
+      cancel: () => { if (!answered) { answered = true; rejectResult(new Error("CodeArts sign-in cancelled")) } },
+    }
+  })
 }
 
 const CALLBACK_PORT_TRIES = 20
@@ -871,7 +931,7 @@ function listenOnCallbackPort(server) {
 async function startOAuthFlow(fetcher) {
   const pkce = await generatePkcePair()
   const keyPair = await generateDpopKeyPair()
-  const { port, server, result } = await startOAuthCallbackServer(pkce, keyPair, fetcher)
+  const { port, server, result, submitManual, cancel } = await startOAuthCallbackServer(pkce, keyPair, fetcher)
   // The authorize URL carries a ticket_id as the IDE's does; the code flow
   // itself never reads it back.
   const loginUrl = buildOAuthLoginUrl(port, pkce, randomHex(32))
@@ -895,7 +955,7 @@ async function startOAuthFlow(fetcher) {
   // rejection, and so the listening socket is always released.
   resultWithUrl.catch(() => {}).finally(() => { void close() })
 
-  return { loginUrl, result: resultWithUrl, close }
+  return { loginUrl, result: resultWithUrl, close, submitManual, cancel }
 }
 
 // ---- signed requests to CodeArts -------------------------------------------
@@ -2680,12 +2740,53 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
 
       // magpie's own hook: how much of the plan is left.
       async usage(getAuth) {
-        const auth = await getAuth()
-        const cred = credentialOf(auth)
+        let account = await getAuth()
+        let cred = credentialOf(account)
         if (!cred?.access_key_id) return { error: "not signed in", windows: [] }
         try {
-          const text = await signedGet(SNAP_STATISTICS_URL, cred, fetcher, SNAP_EXTRA_HEADERS)
-          if (text === undefined) return { error: "CodeArts answered an error", windows: [] }
+          // Quota calls used to bypass the chat loader's silent STS refresh.
+          // Expired AK/SK then always yielded APIG.0602, misleading the panel
+          // into reporting a statistics endpoint failure for valid accounts.
+          const refreshForUsage = async () => {
+            const latest = await getAuth()
+            const stored = credentialOf(latest)
+            if (stored && stored.access_key_id !== cred.access_key_id && !nearExpiry(stored)) {
+              cred = stored
+              account = latest
+              return
+            }
+            const updated = await renewOnce(stored || cred)
+            const next = { ...updated,
+              ...(cred.user_phone && !updated.user_phone ? { user_phone: cred.user_phone } : {}),
+            }
+            account = await persistCredential(client, latest || account, next)
+            cred = next
+          }
+          if (nearExpiry(cred)) {
+            try { await refreshForUsage() }
+            catch (e) {
+              return { error: isPermanentRefreshFailure(e)
+                ? "华为授权已失效，请重新登录 CodeArts" : "华为安全令牌续期失败，请稍后重试",
+                ...(isPermanentRefreshFailure(e) ? { signIn: "expired" } : {}), windows: [] }
+            }
+          }
+          // snapRequest keeps the HTTP status and the stable vendor error
+          // code, unlike signedGet (which discarded every non-2xx response).
+          let stat = await snapRequest("GET", SNAP_STATISTICS_URL, cred, fetcher)
+          if (!stat.ok && /APIG\.0602|security token has expired/i.test(stat.message)) {
+            try {
+              await refreshForUsage()
+              stat = await snapRequest("GET", SNAP_STATISTICS_URL, cred, fetcher)
+            } catch (e) {
+              return { error: isPermanentRefreshFailure(e)
+                ? "华为刷新令牌已失效，请重新登录" : "华为安全令牌续期失败，请稍后重试",
+                ...(isPermanentRefreshFailure(e) ? { signIn: "expired" } : {}), windows: [] }
+            }
+          }
+          if (!stat.ok) return {
+            error: `CodeArts 额度查询失败：${String(stat.message).slice(0, 150)}`,
+            windows: [],
+          }
           const state = await stateOf(cred)
           // The free pool only once today's benefit is the account's; best
           // effort either way: a credit account without one is normal.
@@ -2698,7 +2799,7 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
             if (read) state.batches = read
             state.batchesAt = Date.now()
           }
-          const usage = usageFromStatistics(safeJson(text), benefitText === undefined ? undefined : safeJson(benefitText), {
+          const usage = usageFromStatistics(stat.data, benefitText === undefined ? undefined : safeJson(benefitText), {
             batches: state.batches,
             grants: readGrants(ledgerPath, await ledgerKey(cred)),
             benefitIds: state.benefit ? [...state.benefit] : BENEFIT_MODEL_FALLBACK,
@@ -2756,6 +2857,9 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
               url: flow.loginUrl,
               instructions: "Sign in to Huawei Cloud in the browser; this window closes itself when done.",
               method: "auto",
+              manual_callback: true,
+              submitManual: flow.submitManual,
+              cancel: flow.cancel,
               async callback() {
                 try {
                   const outcome = await flow.result
@@ -2840,7 +2944,7 @@ export const _internal = {
   profileOf, looksLikeIdentifier, maskPhone, fetchAccountPhone, accountPhoneField, IAM_HOST, IAM_USER_URL,
   requestToken, exchangeAuthorizationCode, exchangeRefreshToken, refreshCredential,
   isDeadRefreshToken, isPermanentRefreshFailure, nearExpiry, persistCredential,
-  buildOAuthLoginUrl, buildPortalLoginResultUrl,
+  buildOAuthLoginUrl, buildPortalLoginResultUrl, normalizeManualCallback, safePortalRedirect,
   startOAuthCallbackServer, listenOnCallbackPort, startOAuthFlow, isSignedHostUrl, hostOf, SIGNED_HOSTS, signFor, traceQueueCall,
   BENEFIT_CLAIM_URL, AGENT_LIST_URL, AGENT_DETAIL_URL, CODE_AGENT_ID,
   canonicalQuery, beijingDay, nextBeijingMidnight, vendorDate, creditRateOf,

@@ -76,7 +76,25 @@ test("all real bundled plugins initialize behind the same private Unix socket", 
     })
     expect(cancelled.status).toBe(404)
     const codearts = await fetch("http://localhost/admin/methods?provider=codearts", { unix: socket })
-    expect((await codearts.json()).supported).toBe(false)
+    const codeartsMethods = await codearts.json()
+    expect(codeartsMethods.supported).toBe(true)
+    expect(codeartsMethods.methods[0].label).toContain('Huawei Cloud')
+    const start = await fetch('http://localhost/admin/login/start', {unix:socket,method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify({provider:'codearts',method:codeartsMethods.methods[0].id})})
+    expect(start.status).toBe(200)
+    const flow = await start.json()
+    expect(flow.manual_callback).toBe(true)
+    const badCallback = await fetch('http://localhost/admin/login/callback',{unix:socket,method:'POST',
+      headers:{'content-type':'application/json'},body:JSON.stringify({state:flow.state,
+      url:'https://example.org/oauth/callback?code=invalid'})})
+    expect(badCallback.status).toBe(400)
+    const canceled = await fetch('http://localhost/admin/login/cancel',{unix:socket,method:'POST',
+      headers:{'content-type':'application/json'},body:JSON.stringify({state:flow.state})})
+    expect(canceled.status).toBe(200)
+    const afterCancel = await fetch('http://localhost/admin/login/callback',{unix:socket,method:'POST',
+      headers:{'content-type':'application/json'},body:JSON.stringify({state:flow.state,url:'test'})})
+    expect(afterCancel.status).toBe(404)
     const invalidMethod = await fetch("http://localhost/admin/methods?provider=garbage", { unix: socket })
     expect(invalidMethod.status).toBe(400)
 

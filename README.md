@@ -1074,3 +1074,9 @@ sudo chown -R 10001:10001 ./auths ./data ./config.json
 - 本项目不授予任何上游（CodeBuddy / 腾讯）接口或服务的权利；使用者仍需自行遵守上游服务条款
 
 **v1.13.5 静态资源一致性修复**：面板将内嵌 `app.js` 内容 SHA-256 前缀作为脚本资源查询参数（`/panel/app.js?v=<content-hash>`），并在 HTML/JS 响应中明确设置刷新策略。Cloudflare/浏览器即使缓存旧脚本，也不会将新版 HTML 与旧版操作逻辑混合；无需用户清空浏览器缓存。
+
+### v1.13.6 · Responses 流完整性与 CodeArts 远程授权
+
+- Responses SSE 不再将上游 HTTP 200/TCP EOF 当成生成完成：缺少 Chat `finish_reason` 时发 `response.failed`；`finish_reason=length` 发 `response.incomplete`。正文中被 SSE 分片拆散的原生 DSML 工具调用也按当前请求声明的 allowlist 重建为结构化 `function_call` / `custom_tool_call`，未知工具名严格拒绝，不会把工具指令误作最终文本。
+- CodeArts OAuth 保留官方 `codearts-agent` PKCE/DPoP 协议及 `127.0.0.1` 回调；当管理面板运行在远端 VPS 上时，用户可以将华为授权后浏览器地址栏里无法打开的回调 URL 粘贴回**原生账号弹窗**。网关验证回调端口与 HTTPS 华为中间跳转地址，并使用同一 PKCE/DPoP 会话完成令牌交换；不暴露或转发凭据至第三方主机。登录必须由账号本人在华为网页上确认。
+- CodeArts 额度查询现在使用与对话相同的临时凭据续期（并写回旋转后的 refresh_token），明确显示 HTTP 状态/`APIG.0602`、不可续期时提示重新授权；取消原有的统一 `CodeArts answered an error`。多平台及其余 Provider 的配置和 API 路径不变。
