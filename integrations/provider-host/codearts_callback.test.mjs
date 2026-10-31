@@ -53,7 +53,7 @@ test('expired CodeArts quota credential renews once before signed usage read and
     refresh_token:'old-refresh',code_verifier:'test-verifier',dpop_private_key_jwk:keyPair.privateKeyJwk,
     expires_at:new Date(Date.now()-5000).toISOString(),session_id:'stable-test-session',user_phone:'138****1234',
   }
-  let account={access:JSON.stringify(credential),refresh:'old-refresh',accountId:'test-account'}
+  let account={type:'oauth',access:JSON.stringify(credential),refresh:'old-refresh',accountId:'test-account'}
   let rotations=0, stats=0, saved=0
   const plugin=await CodeArtsAuthPlugin({client:{auth:{async set({body}){saved++;account=body}}}}, {
     fetch:async (url, init) => {
@@ -77,7 +77,7 @@ test('quota statistics error preserves HTTP status instead of generic provider e
   const credential={access_key_id:'fresh-ak',secret_access_key:'fresh-sk',security_token:'fresh-st',
     expires_at:new Date(Date.now()+3600_000).toISOString(),session_id:'another-test-session',user_phone:'138****1234'}
   const plugin=await CodeArtsAuthPlugin({}, {fetch:async()=>new Response(JSON.stringify({error_code:'API.TEST',error_msg:'forbidden'}),{status:403})})
-  const usage=await plugin.auth.usage(async()=>({access:JSON.stringify(credential)}))
+  const usage=await plugin.auth.usage(async()=>({type:'oauth',access:JSON.stringify(credential)}))
   expect(usage.error).toContain('HTTP 403')
   expect(usage.error).toContain('API.TEST')
 })
