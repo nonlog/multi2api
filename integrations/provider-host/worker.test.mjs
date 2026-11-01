@@ -15,9 +15,14 @@ test("all real bundled plugins initialize behind the same private Unix socket", 
     {id:"us-warp",name:"US WARP",url:"socks5h://127.0.0.1:56356"},
   ]))
   let proxyAuthorization = ""
+  let proxyConnectAuthorization = ""
   const proxyServer = createServer((req, res) => {
     proxyAuthorization = String(req.headers["proxy-authorization"] || "")
     res.writeHead(200, {"content-type":"text/plain"}).end("through-account-proxy")
+  })
+  proxyServer.on("connect", (req, socket) => {
+    proxyConnectAuthorization = String(req.headers["proxy-authorization"] || "")
+    socket.write("HTTP/1.1 200 Connection Established\r\n\r\n", () => socket.destroy())
   })
   await new Promise(resolve => proxyServer.listen(0, "127.0.0.1", resolve))
   const proxyAddress = proxyServer.address()
@@ -146,12 +151,19 @@ test("all real bundled plugins initialize behind the same private Unix socket", 
     const routed = await mod._internal.withAccountProxy(account, () => mod._internal.providerFetch("http://example.invalid/proxy-check"))
     expect(routed.status).toBe(200)
     expect(await routed.text()).toBe("through-account-proxy")
-    expect(proxyAuthorization).toBe("Basic " + Buffer.from("us-warp:provider-proxy-test-token").toString("base64"))
+    const proxyBasic = "Basic " + Buffer.from("us-warp:provider-proxy-test-token").toString("base64")
+    expect(proxyAuthorization).toBe(proxyBasic)
+    let tlsTunnelClosed = false
+    try {
+      await mod._internal.withAccountProxy(account, () => mod._internal.providerFetch("https://example.invalid/proxy-check"))
+    } catch { tlsTunnelClosed = true }
+    expect(tlsTunnelClosed).toBe(true)
+    expect(proxyConnectAuthorization).toBe(proxyBasic)
     const direct = await mod._internal.withAccountProxy("unassigned-account", () =>
       mod._internal.providerFetch(`http://127.0.0.1:${directAddress.port}/direct-check`))
     expect(direct.status).toBe(200)
     expect(await direct.text()).toBe("direct")
-    expect(proxyAuthorization).toBe("Basic " + Buffer.from("us-warp:provider-proxy-test-token").toString("base64"))
+    expect(proxyAuthorization).toBe(proxyBasic)
     const persisted = JSON.parse(await (await import("node:fs/promises")).readFile(authFile, "utf8"))
     expect(persisted[account].proxy_id).toBe("us-warp")
     expect((await perform("account/action", {provider:"qoder",account,action:"remove"})).status).toBe(200)
