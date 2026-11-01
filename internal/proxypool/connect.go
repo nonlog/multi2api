@@ -196,6 +196,15 @@ func closeWrite(conn net.Conn) {
 	}
 }
 
+// DialContext connects target (host:port) through a named SOCKS5/SOCKS5H endpoint.
+// For socks5h, the target hostname is sent to the proxy and resolved remotely.
+func DialContext(ctx context.Context, rawURL, target string) (net.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return dialSOCKS5(ctx, rawURL, target)
+}
+
 func dialSOCKS5(ctx context.Context, rawURL, target string) (net.Conn, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u == nil || (u.Scheme != "socks5h" && u.Scheme != "socks5") || u.Hostname() == "" || u.Port() == "" {

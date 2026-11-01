@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -176,11 +177,15 @@ func (m *Manager) Test(ctx context.Context, id string) (ip string, elapsed time.
 	}
 	transport := &http.Transport{}
 	if e.URL != "" {
-		u, parseErr := url.Parse(e.URL)
-		if parseErr != nil {
+		if _, parseErr := url.Parse(e.URL); parseErr != nil {
 			return "", 0, parseErr
 		}
-		transport.Proxy = http.ProxyURL(u)
+		transport.DialContext = func(ctx context.Context, network, target string) (net.Conn, error) {
+			if network != "tcp" && network != "tcp4" && network != "tcp6" {
+				return nil, fmt.Errorf("unsupported proxy transport network %q", network)
+			}
+			return DialContext(ctx, e.URL, target)
+		}
 	}
 	client := &http.Client{Transport: transport, Timeout: 15 * time.Second}
 	defer transport.CloseIdleConnections()

@@ -4,7 +4,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -12,49 +11,30 @@ import (
 	"github.com/nonlog/multi2api/internal/auth"
 )
 
-func TestAccountHTTPClientUsesItsAssignedProxy(t *testing.T) {
-	proxyHits := 0
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		proxyHits++
-		if !r.URL.IsAbs() || r.URL.Host != "target.invalid" {
-			t.Errorf("proxy received request URL %q", r.URL)
-		}
-		_, _ = io.WriteString(w, "proxied")
-	}))
-	defer proxy.Close()
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "direct") }))
-	defer origin.Close()
-
+func TestAccountHTTPClientSelectsAssignedProxyTransport(t *testing.T) {
 	client := New()
 	client.SetProxyResolver(func(id string) (string, bool) {
 		if id == "wa-direct" {
-			return proxy.URL, true
+			return "socks5h://127.0.0.1:1080", true
 		}
 		return "", false
 	})
 
 	proxiedAccount := &auth.Auth{}
 	proxiedAccount.SetProxyID("wa-direct")
-	resp, err := client.httpFor(proxiedAccount).Get("http://target.invalid/test")
-	if err != nil {
-		t.Fatal(err)
+	proxied := client.httpFor(proxiedAccount)
+	if proxied == client.HTTP {
+		t.Fatal("assigned account unexpectedly uses the shared DIRECT client")
 	}
-	body, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	if string(body) != "proxied" || proxyHits != 1 {
-		t.Fatalf("proxy result=%q hits=%d", body, proxyHits)
+	transport, ok := proxied.Transport.(*http.Transport)
+	if !ok || transport.DialContext == nil || transport.Proxy != nil {
+		t.Fatalf("account proxy transport is not using the SOCKS dialer: %#v", proxied.Transport)
 	}
 
 	directAccount := &auth.Auth{}
 	directAccount.SetProxyID("direct")
-	resp, err = client.httpFor(directAccount).Get(origin.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, _ = io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	if string(body) != "direct" || proxyHits != 1 {
-		t.Fatalf("direct result=%q proxy hits=%d", body, proxyHits)
+	if got := client.httpFor(directAccount); got != client.HTTP {
+		t.Fatal("DIRECT account did not reuse the shared HTTP client")
 	}
 }
 

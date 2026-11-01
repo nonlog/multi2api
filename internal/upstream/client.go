@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/nonlog/multi2api/internal/auth"
 	"github.com/nonlog/multi2api/internal/logfmt"
+	"github.com/nonlog/multi2api/internal/proxypool"
 )
 
 // ErrKind 错误分类，pool 据此决定冷却时长。
@@ -839,7 +841,15 @@ func (c *Client) clientsForAuth(a *auth.Auth) proxyClientPair {
 	// Match the shared ChatHTTP transport's configured TTFT/header deadline.
 	// The per-account transport must not silently fall back to the constructor default.
 	tr.ResponseHeaderTimeout = c.HeaderTimeout
-	tr.Proxy = http.ProxyURL(u) // Go supports SOCKS5/SOCKS5H; socks5h keeps DNS remote.
+	// Use the same explicit SOCKS5 dialer as the provider bridge. This guarantees
+	// socks5h sends hostnames to the proxy instead of relying on Transport.Proxy's
+	// scheme-specific DNS behavior.
+	tr.DialContext = func(ctx context.Context, network, target string) (net.Conn, error) {
+		if network != "tcp" && network != "tcp4" && network != "tcp6" {
+			return nil, fmt.Errorf("unsupported proxy transport network %q", network)
+		}
+		return proxypool.DialContext(ctx, raw, target)
+	}
 	baseHTTP := c.HTTP
 	baseChat := c.chatHTTP()
 	httpClient := &http.Client{Timeout: baseHTTP.Timeout, Transport: tr, Jar: baseHTTP.Jar, CheckRedirect: baseHTTP.CheckRedirect}
