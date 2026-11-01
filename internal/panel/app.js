@@ -124,6 +124,7 @@ async function openProxyPool() {
   } catch (e) { toast('读取代理池失败：' + e.message, 'err'); }
 }
 
+if (typeof $ === 'function' && typeof document !== 'undefined') {
 if ($('btnProxyPool')) $('btnProxyPool').onclick = openProxyPool;
 if ($('btnCloseProxyPool')) $('btnCloseProxyPool').onclick = () => $('proxyVeil').classList.remove('on');
 if ($('proxyVeil')) $('proxyVeil').addEventListener('click', ev => { if (ev.target === $('proxyVeil')) $('proxyVeil').classList.remove('on'); });
@@ -177,6 +178,7 @@ document.addEventListener('change', async ev => {
     toast('代理分配失败：' + e.message, 'err');
   } finally { select.disabled = false; }
 });
+}
 
 function ago(iso) {
   if (!iso || iso.startsWith('0001-')) return '—';
