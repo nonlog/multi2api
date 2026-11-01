@@ -5,7 +5,6 @@
 import { readFile, rename, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { randomUUID } from "node:crypto"
-import { Buffer } from "node:buffer"
 import { AsyncLocalStorage } from "node:async_hooks"
 import { ZCodeAuthPlugin } from "../magpie-plugins/zcode/index.mjs"
 import {
@@ -63,8 +62,12 @@ function withAccountProxy(accountKey, fn) {
   const id = String(credentials[accountKey]?.proxy_id || "direct")
   if (id === "direct") return proxyContext.run(false, fn)
   if (!PROXY_ENDPOINT || !PROXY_TOKEN) throw new Error("account proxy bridge is unavailable")
-  const authorization = "Basic " + Buffer.from(`${id}:${PROXY_TOKEN}`).toString("base64")
-  return proxyContext.run({ url: PROXY_ENDPOINT, headers: { "Proxy-Authorization": authorization }, respectNoProxy: false }, fn)
+  const proxyURL = new URL(PROXY_ENDPOINT)
+  proxyURL.username = id
+  proxyURL.password = PROXY_TOKEN
+  // Bun 1.3.3 supports the proxy URL form; its object form was not yet
+  // implemented consistently across the supported runtime versions.
+  return proxyContext.run(proxyURL.toString(), fn)
 }
 
 async function allowedProxyID(id) {
@@ -728,4 +731,9 @@ export async function start() {
 
 if (import.meta.main) await start()
 
-export const _internal = { withAccountProxy, allowedProxyID }
+export const _internal = {
+  withAccountProxy,
+  allowedProxyID,
+  // Exercise the same unqualified global fetch binding used by the bundled plugins.
+  providerFetch: (input, init) => fetch(input, init),
+}

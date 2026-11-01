@@ -21,6 +21,9 @@ test("all real bundled plugins initialize behind the same private Unix socket", 
   })
   await new Promise(resolve => proxyServer.listen(0, "127.0.0.1", resolve))
   const proxyAddress = proxyServer.address()
+  const directServer = createServer((_req, res) => res.writeHead(200, {"content-type":"text/plain"}).end("direct"))
+  await new Promise(resolve => directServer.listen(0, "127.0.0.1", resolve))
+  const directAddress = directServer.address()
   process.env.WB2API_PROVIDER_SOCKET = socket
   process.env.WB2API_PROVIDER_AUTH_FILE = authFile
   process.env.WB2API_PROXY_POOL_FILE = proxyPoolFile
@@ -140,9 +143,14 @@ test("all real bundled plugins initialize behind the same private Unix socket", 
     expect((await accountProxyState.json()).data[0].proxy_id).toBe("us-warp")
     const badAssignment = await perform("account/proxy", {provider:"qoder",account,proxy_id:"not-in-pool"})
     expect(badAssignment.status).toBe(400)
-    const routed = await mod._internal.withAccountProxy(account, () => fetch("http://example.invalid/proxy-check"))
+    const routed = await mod._internal.withAccountProxy(account, () => mod._internal.providerFetch("http://example.invalid/proxy-check"))
     expect(routed.status).toBe(200)
     expect(await routed.text()).toBe("through-account-proxy")
+    expect(proxyAuthorization).toBe("Basic " + Buffer.from("us-warp:provider-proxy-test-token").toString("base64"))
+    const direct = await mod._internal.withAccountProxy("unassigned-account", () =>
+      mod._internal.providerFetch(`http://127.0.0.1:${directAddress.port}/direct-check`))
+    expect(direct.status).toBe(200)
+    expect(await direct.text()).toBe("direct")
     expect(proxyAuthorization).toBe("Basic " + Buffer.from("us-warp:provider-proxy-test-token").toString("base64"))
     const persisted = JSON.parse(await (await import("node:fs/promises")).readFile(authFile, "utf8"))
     expect(persisted[account].proxy_id).toBe("us-warp")
@@ -152,6 +160,7 @@ test("all real bundled plugins initialize behind the same private Unix socket", 
   } finally {
     server?.stop(true)
     await new Promise(resolve => proxyServer.close(resolve))
+    await new Promise(resolve => directServer.close(resolve))
     await rm(dir, { recursive: true, force: true })
   }
 }, 20_000)
