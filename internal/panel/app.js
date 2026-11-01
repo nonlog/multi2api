@@ -124,10 +124,10 @@ async function openProxyPool() {
   } catch (e) { toast('读取代理池失败：' + e.message, 'err'); }
 }
 
-$('btnProxyPool').onclick = openProxyPool;
-$('btnCloseProxyPool').onclick = () => $('proxyVeil').classList.remove('on');
-$('proxyVeil').addEventListener('click', ev => { if (ev.target === $('proxyVeil')) $('proxyVeil').classList.remove('on'); });
-$('btnSaveProxyPool').onclick = async () => {
+if ($('btnProxyPool')) $('btnProxyPool').onclick = openProxyPool;
+if ($('btnCloseProxyPool')) $('btnCloseProxyPool').onclick = () => $('proxyVeil').classList.remove('on');
+if ($('proxyVeil')) $('proxyVeil').addEventListener('click', ev => { if (ev.target === $('proxyVeil')) $('proxyVeil').classList.remove('on'); });
+if ($('btnSaveProxyPool')) $('btnSaveProxyPool').onclick = async () => {
   const button = $('btnSaveProxyPool'); button.disabled = true;
   try {
     await api('proxies', { method:'PUT', body:JSON.stringify({text:$('proxyPoolText').value}) });
@@ -136,7 +136,7 @@ $('btnSaveProxyPool').onclick = async () => {
   } catch (e) { toast('保存代理池失败：' + e.message, 'err'); }
   finally { button.disabled = false; }
 };
-$('proxyPoolList').addEventListener('click', async ev => {
+if ($('proxyPoolList')) $('proxyPoolList').addEventListener('click', async ev => {
   const button = ev.target.closest('[data-proxy-test]');
   if (!button) return;
   const id = button.dataset.proxyTest;
