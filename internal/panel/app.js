@@ -127,7 +127,8 @@ async function openProxyPool() {
 if (typeof $ === 'function' && typeof document !== 'undefined') {
 if ($('btnProxyPool')) $('btnProxyPool').onclick = openProxyPool;
 if ($('btnCloseProxyPool')) $('btnCloseProxyPool').onclick = () => $('proxyVeil').classList.remove('on');
-if ($('proxyVeil')) $('proxyVeil').addEventListener('click', ev => { if (ev.target === $('proxyVeil')) $('proxyVeil').classList.remove('on'); });
+const proxyVeil = $('proxyVeil');
+if (proxyVeil && typeof proxyVeil.addEventListener === 'function') proxyVeil.addEventListener('click', ev => { if (ev.target === proxyVeil) proxyVeil.classList.remove('on'); });
 if ($('btnSaveProxyPool')) $('btnSaveProxyPool').onclick = async () => {
   const button = $('btnSaveProxyPool'); button.disabled = true;
   try {
@@ -137,7 +138,8 @@ if ($('btnSaveProxyPool')) $('btnSaveProxyPool').onclick = async () => {
   } catch (e) { toast('保存代理池失败：' + e.message, 'err'); }
   finally { button.disabled = false; }
 };
-if ($('proxyPoolList')) $('proxyPoolList').addEventListener('click', async ev => {
+const proxyPoolList = $('proxyPoolList');
+if (proxyPoolList && typeof proxyPoolList.addEventListener === 'function') proxyPoolList.addEventListener('click', async ev => {
   const button = ev.target.closest('[data-proxy-test]');
   if (!button) return;
   const id = button.dataset.proxyTest;
@@ -150,7 +152,7 @@ if ($('proxyPoolList')) $('proxyPoolList').addEventListener('click', async ev =>
   finally { button.disabled = false; }
 });
 
-document.addEventListener('change', async ev => {
+if (typeof document.addEventListener === 'function') document.addEventListener('change', async ev => {
   const select = ev.target.closest('select[data-proxy-kind]');
   if (!select) return;
   const kind = select.dataset.proxyKind, next = select.value, previous = select.dataset.current || 'direct';
