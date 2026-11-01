@@ -43,6 +43,10 @@ type Auth struct {
 	// 手写扁平形 auth 文件可直接写 "device_token": "..."；插件 OAuth 嵌套形
 	// 顶层 device_token 也会被解析（与桌面端共用状态文件的部署方式）。
 	DeviceToken string
+
+	// proxyID is a stable ID in the Multi2API proxy pool. Empty means DIRECT
+	// for older credentials; the panel persists explicit assignments.
+	proxyID string
 }
 
 // Lock 供同进程内其他包（upstream.RefreshToken）在改写 Auth 字段期间加锁。
@@ -89,6 +93,29 @@ func (a *Auth) RefreshTokenValue() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.RefreshToken
+}
+
+// ProxyIDValue returns the selected named egress route (empty/legacy means DIRECT).
+func (a *Auth) ProxyIDValue() string {
+	if a == nil {
+		return "direct"
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if strings.TrimSpace(a.proxyID) == "" {
+		return "direct"
+	}
+	return a.proxyID
+}
+
+// SetProxyID changes the per-account egress route without touching OAuth tokens.
+func (a *Auth) SetProxyID(id string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.proxyID = strings.TrimSpace(id)
+	a.mu.Unlock()
 }
 
 // globalEnabled 全局开关：global realm 是否路由（D5 双保险）。
@@ -255,6 +282,7 @@ func Parse(raw []byte) (*Auth, error) {
 			} `json:"account"`
 			// DeviceToken 顶层 device_token（嵌套形与扁平形共用；手写时无需嵌进 auth 对象）。
 			DeviceToken string `json:"device_token"`
+			ProxyID     string `json:"proxy_id"`
 		}
 		if err := json.Unmarshal(raw, &n); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
@@ -269,6 +297,7 @@ func Parse(raw []byte) (*Auth, error) {
 			EnterpriseID: n.Account.EnterpriseID,
 			Nickname:     n.Account.Nickname,
 			DeviceToken:  n.DeviceToken,
+			proxyID:      n.ProxyID,
 		}
 	} else {
 		var f struct {
@@ -281,6 +310,7 @@ func Parse(raw []byte) (*Auth, error) {
 			EnterpriseID string `json:"enterpriseId"`
 			Nickname     string `json:"nickname"`
 			DeviceToken  string `json:"device_token"`
+			ProxyID      string `json:"proxy_id"`
 		}
 		if err := json.Unmarshal(raw, &f); err != nil {
 			return nil, fmt.Errorf("storage_parse_error: %w", err)
@@ -295,6 +325,7 @@ func Parse(raw []byte) (*Auth, error) {
 			EnterpriseID: f.EnterpriseID,
 			Nickname:     f.Nickname,
 			DeviceToken:  f.DeviceToken,
+			proxyID:      f.ProxyID,
 		}
 	}
 	if strings.TrimSpace(a.AccessToken) == "" {
@@ -333,6 +364,9 @@ func (a *Auth) SaveAtomic() error {
 	// （保持与插件 OAuth 输出形状一致，插件读取忽略未知键）。
 	if a.DeviceToken != "" {
 		doc["device_token"] = a.DeviceToken
+	}
+	if strings.TrimSpace(a.proxyID) != "" {
+		doc["proxy_id"] = a.proxyID
 	}
 	raw, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {

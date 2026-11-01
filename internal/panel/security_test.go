@@ -26,6 +26,7 @@ func TestUnifiedProviderPanelLinksAndAuthentication(t *testing.T) {
 		`id="providerCredential"`, `id="modelAliasBox"`,
 		`id="aliasTarget"`, `id="aliasRows"`,
 		`id="codeartsManual"`, `id="codeartsCallbackInput"`, `id="btnSubmitCodeartsCallback"`,
+		`id="proxyVeil"`, `id="proxyPoolText"`, `id="proxyPoolList"`, `id="btnSaveProxyPool"`,
 		`id="btnAutoUnifySave"`, `id="autoUnifyChoices"`,
 		`id="providerAccountBody"`, `id="btnUseQoderPat"`,
 		`<option value="codearts">`, `<option value="qoder-cn">`,
@@ -35,6 +36,11 @@ func TestUnifiedProviderPanelLinksAndAuthentication(t *testing.T) {
 		}
 	}
 	for _, item := range []struct{ method, path string }{
+		{"GET", "/panel/api/proxies"},
+		{"PUT", "/panel/api/proxies"},
+		{"POST", "/panel/api/proxies/test"},
+		{"POST", "/panel/api/accounts/test/proxy"},
+		{"POST", "/panel/api/providers/account/proxy"},
 		{"GET", "/panel/api/providers/accounts"},
 		{"GET", "/panel/api/providers/methods?provider=qoder"},
 		{"POST", "/panel/api/providers/login/start"},

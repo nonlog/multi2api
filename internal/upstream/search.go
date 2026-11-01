@@ -158,7 +158,7 @@ func (c *Client) Search(ctx context.Context, a *auth.Auth, query string, maxResu
 //   - 2xx 但 code != 0 → 业务错误（ErrNone 时兜底 ErrClient），同样包成 *Error
 //   - 读体失败 → 普通 error（半截 body 不参与账号惩罚）
 func (c *Client) doSearch(req *http.Request) (*SearchOutcome, error) {
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.httpFor(a).Do(req)
 	if err != nil {
 		return nil, err
 	}

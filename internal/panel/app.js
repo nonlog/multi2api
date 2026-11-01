@@ -10,6 +10,7 @@ let refTimer = null;
 let mdFilter = { q: '', realm: '', cap: '', effort: '', promo: '', sort: 'default' };
 let mdAll = [], mdProbes = {}, mdProbeOf = () => undefined;
 let pvAccounts = [], pvQuotas = new Map(), pvLoginProvider = '', pvMethods = [];
+let proxyPool = [], proxyAssigned = {}, proxyPoolLoaded = false, proxyPoolLoading = false, proxyPoolPromise = null;
 let modelAliasWB = {}, modelAliasProvider = {};
 let modelAliasAuto = [];
 let reqFilter = { q: '', outcome: '' };
@@ -71,6 +72,112 @@ function esc(s) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+function proxySelectHtml(current, kind, meta = {}) {
+  const selected = current || 'direct';
+  const options = proxyPool.length ? proxyPool : [{id:'direct',name:'DIRECT'}];
+  const attrs = kind === 'workbuddy'
+    ? ' data-uid="' + esc(meta.uid || '') + '"'
+    : ' data-provider="' + esc(meta.provider || '') + '" data-account="' + esc(meta.account || '') + '"';
+  return '<select class="proxy-select" data-proxy-kind="' + esc(kind) + '" data-current="' + esc(selected) + '"' + attrs +
+    ' aria-label="选择出口代理">' + options.map(p => '<option value="' + esc(p.id) + '"' + (p.id === selected ? ' selected' : '') + '>' +
+      esc(p.id === 'direct' ? 'DIRECT · 不走代理' : p.name) + '</option>').join('') + '</select>';
+}
+
+async function loadProxyPool(force = false) {
+  if (proxyPoolPromise) {
+    await proxyPoolPromise;
+    if (!force) return;
+  }
+  if (proxyPoolLoaded && !force) return;
+  proxyPoolLoading = true;
+  proxyPoolPromise = (async () => {
+    const data = await api('proxies');
+    proxyPool = Array.isArray(data.proxies) ? data.proxies : [];
+    proxyAssigned = data.assigned || {};
+    proxyPoolLoaded = true;
+    if (overviewData) renderAccounts(overviewData.accounts || []);
+    if ($('providerAccountBody')) renderProviderAccounts();
+    if ($('proxyVeil')?.classList.contains('on')) renderProxyPool();
+  })();
+  try { await proxyPoolPromise; }
+  finally { proxyPoolPromise = null; proxyPoolLoading = false; }
+}
+
+function renderProxyPool() {
+  const list = $('proxyPoolList');
+  if (!list) return;
+  list.innerHTML = proxyPool.map(p => '<div class="proxy-entry" data-proxy-entry="' + esc(p.id) + '">' +
+    '<span class="proxy-name">' + esc(p.name) + '</span>' +
+    '<code>' + esc(p.url || 'DIRECT · 不使用代理') + '</code>' +
+    '<span class="proxy-assigned">' + (proxyAssigned[p.id] || 0) + ' 个账号</span>' +
+    '<button type="button" class="proxy-test" data-proxy-test="' + esc(p.id) + '">测试</button>' +
+    '<span class="proxy-result" data-proxy-result="' + esc(p.id) + '" aria-live="polite"></span></div>').join('');
+  if (!proxyPool.length) list.innerHTML = '<div class="pv-list-empty">代理池为空</div>';
+}
+
+async function openProxyPool() {
+  try {
+    await loadProxyPool(true);
+    $('proxyPoolText').value = proxyPool.map(p => p.id === 'direct' ? 'DIRECT' : p.name + ' | ' + p.url).join('\n');
+    renderProxyPool();
+    $('proxyVeil').classList.add('on');
+  } catch (e) { toast('读取代理池失败：' + e.message, 'err'); }
+}
+
+$('btnProxyPool').onclick = openProxyPool;
+$('btnCloseProxyPool').onclick = () => $('proxyVeil').classList.remove('on');
+$('proxyVeil').addEventListener('click', ev => { if (ev.target === $('proxyVeil')) $('proxyVeil').classList.remove('on'); });
+$('btnSaveProxyPool').onclick = async () => {
+  const button = $('btnSaveProxyPool'); button.disabled = true;
+  try {
+    await api('proxies', { method:'PUT', body:JSON.stringify({text:$('proxyPoolText').value}) });
+    await loadProxyPool(true);
+    toast('代理池已保存，配置已立即生效', 'ok');
+  } catch (e) { toast('保存代理池失败：' + e.message, 'err'); }
+  finally { button.disabled = false; }
+};
+$('proxyPoolList').addEventListener('click', async ev => {
+  const button = ev.target.closest('[data-proxy-test]');
+  if (!button) return;
+  const id = button.dataset.proxyTest;
+  const result = $('proxyPoolList').querySelector('[data-proxy-result="' + CSS.escape(id) + '"]');
+  button.disabled = true; if (result) result.textContent = '正在测试…';
+  try {
+    const data = await api('proxies/test', { method:'POST', body:JSON.stringify({proxy_id:id}) });
+    if (result) result.textContent = data.ok ? '出口 IP ' + data.egress_ip + ' · ' + data.latency_ms + ' ms' : '失败：' + data.error;
+  } catch (e) { if (result) result.textContent = '测试失败：' + e.message; }
+  finally { button.disabled = false; }
+});
+
+document.addEventListener('change', async ev => {
+  const select = ev.target.closest('select[data-proxy-kind]');
+  if (!select) return;
+  const kind = select.dataset.proxyKind, next = select.value, previous = select.dataset.current || 'direct';
+  if (next === previous) return;
+  select.disabled = true;
+  try {
+    if (kind === 'workbuddy') {
+      await api('accounts/' + encodeURIComponent(select.dataset.uid) + '/proxy', {
+        method:'POST', body:JSON.stringify({proxy_id:next}),
+      });
+      const account = (overviewData?.accounts || []).find(a => a.uid === select.dataset.uid);
+      if (account) account.proxy_id = next;
+    } else {
+      await api('providers/account/proxy', {
+        method:'POST', body:JSON.stringify({provider:select.dataset.provider,account:select.dataset.account,proxy_id:next}),
+      });
+      const account = pvAccounts.find(a => a.provider === select.dataset.provider && a.account === select.dataset.account);
+      if (account) account.proxy_id = next;
+    }
+    select.dataset.current = next;
+    await loadProxyPool(true);
+    toast('账号出口已切换到 ' + (proxyPool.find(p => p.id === next)?.name || next), 'ok');
+  } catch (e) {
+    select.value = previous;
+    toast('代理分配失败：' + e.message, 'err');
+  } finally { select.disabled = false; }
+});
+
 function ago(iso) {
   if (!iso || iso.startsWith('0001-')) return '—';
   const s = (Date.now() - new Date(iso)) / 1000;
@@ -440,6 +547,7 @@ function renderProviderAccounts() {
       '<div class="pv-state-meta">' + esc(checkin) + '</div></div>' +
       '<div class="pv-usage"><div class="pv-usage-main ' + esc(credit.css) + '" title="' + esc(credit.main) + '">' + esc(credit.main) +
       '</div><div class="pv-usage-minor" title="' + esc(credit.sub) + '">' + esc(credit.sub) + '</div></div>' +
+      '<div class="pv-proxy-cell">' + proxySelectHtml(a.proxy_id, 'provider', {provider:a.provider,account:a.account}) + '</div>' +
       '<div class="pv-menu-host"><button type="button" class="pv-menu-toggle" data-pv-toggle="' + credentials +
       '" aria-expanded="false" aria-label="管理账号 ' + label + '" aria-haspopup="true">' +
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg></button>' +
@@ -567,7 +675,7 @@ setInterval(() => {
 function renderAccounts(list) {
   const tb = $('accBody');
   if (!list.length) {
-    tb.innerHTML = '<tr><td colspan="9"><div class="empty"><div class="big">账号池是空的</div>点击右上角「添加账号」，用浏览器登录一个 WorkBuddy 账号</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="10"><div class="empty"><div class="big">账号池是空的</div>点击右上角「添加账号」，用浏览器登录一个 WorkBuddy 账号</div></td></tr>';
     return;
   }
   // 有总额度（credits_total）→ 进度条按自身 剩余/总额 百分比；旧数据无总额 → 退回池内最高=100%
@@ -632,6 +740,7 @@ function renderAccounts(list) {
         '<span class="usage-item usage-rate"><b>' + rate + '</b></span>' +
       '</span></td>' +
       '<td class="num" style="color:var(--ink-3)">' + ago(s.last_success) + '</td>' +
+      '<td class="proxy-cell">' + proxySelectHtml(s.proxy_id, 'workbuddy', {uid:s.uid}) + '</td>' +
       '<td class="acts">' +
         // 企业版无个人成长体系（签到 400「企业账号不支持该操作」/ 成长任务 403）：
         // 不渲染「签到」「任务」按钮，只留「额度」——点它走 /balance，企业额度由
@@ -687,6 +796,7 @@ function renderModelLocks(rows) {
 }
 
 async function loadOverview(quiet) {
+  if (!proxyPoolLoaded) void loadProxyPool().catch(e => toast('代理池加载失败：' + e.message, 'err'));
   try {
     const d = await api('overview');
     overviewData = d;

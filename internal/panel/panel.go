@@ -11,7 +11,9 @@
 package panel
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -28,6 +30,7 @@ import (
 	"github.com/nonlog/multi2api/internal/livecfg"
 	"github.com/nonlog/multi2api/internal/pool"
 	"github.com/nonlog/multi2api/internal/providerhost"
+	"github.com/nonlog/multi2api/internal/proxypool"
 	"github.com/nonlog/multi2api/internal/reqlog"
 	"github.com/nonlog/multi2api/internal/scheduler"
 	"github.com/nonlog/multi2api/internal/upstream"
@@ -71,6 +74,7 @@ type Config struct {
 	// Embedded provider management is deliberately in the original panel,
 	// sharing its API key and its private Go-supervised Bun runtime.
 	ProviderHost *providerhost.Host
+	ProxyPool    *proxypool.Manager
 }
 
 // Panel 管理面板 handler。挂载方式：外层 mux Handle("/panel/", panel)，
@@ -160,6 +164,9 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/request_metrics", p.withAuth(p.requestMetrics))
 	p.mux.HandleFunc("GET /panel/api/request_logs", p.withAuth(p.requestLogs))
 	p.mux.HandleFunc("GET /panel/api/models", p.withAuth(p.models))
+	p.mux.HandleFunc("GET /panel/api/proxies", p.withAuth(p.proxyList))
+	p.mux.HandleFunc("PUT /panel/api/proxies", p.withAuth(p.proxySave))
+	p.mux.HandleFunc("POST /panel/api/proxies/test", p.withAuth(p.proxyTest))
 	p.mux.HandleFunc("GET /panel/api/providers/accounts", p.withAuth(p.providerAccounts))
 	p.mux.HandleFunc("GET /panel/api/providers/methods", p.withAuth(p.providerMethods))
 	p.mux.HandleFunc("POST /panel/api/providers/login/start", p.withAuth(p.providerLoginStart))
@@ -168,10 +175,12 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/providers/login/cancel", p.withAuth(p.providerLoginCancel))
 	p.mux.HandleFunc("POST /panel/api/providers/import", p.withAuth(p.providerImport))
 	p.mux.HandleFunc("POST /panel/api/providers/account/action", p.withAuth(p.providerAccountAction))
+	p.mux.HandleFunc("POST /panel/api/providers/account/proxy", p.withAuth(p.providerAccountProxy))
 	p.mux.HandleFunc("POST /panel/api/login/start", p.withAuth(p.loginStart))
 	p.mux.HandleFunc("GET /panel/api/login/poll", p.withAuth(p.loginPoll))
 	p.mux.HandleFunc("GET /panel/api/login/regions", p.withAuth(p.loginRegions))
 	p.mux.HandleFunc("POST /panel/api/import/cockpit", p.withAuth(p.importCockpit))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/proxy", p.withAuth(p.accountProxy))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/revive", p.withAuth(p.accountRevive))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/disable", p.withAuth(p.accountDisable))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/pause", p.withAuth(p.accountPause))
@@ -536,6 +545,164 @@ func (p *Panel) modelProbes(w http.ResponseWriter, r *http.Request) {
 		out["updated_at"] = fi.ModTime().Format(time.RFC3339)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// ---------------------------------------------------------------------------
+// Named proxy pool and per-account egress assignments.
+// ---------------------------------------------------------------------------
+
+type proxyImportRequest struct {
+	Text string `json:"text"`
+}
+type proxyAssignRequest struct {
+	ProxyID string `json:"proxy_id"`
+}
+
+func (p *Panel) providerProxyAssignments(ctx context.Context) (map[string]int, error) {
+	assigned := make(map[string]int)
+	if p.cfg.ProviderHost == nil {
+		return assigned, nil
+	}
+	raw, status, err := p.cfg.ProviderHost.Admin(ctx, http.MethodGet, "accounts", nil)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("provider account list returned HTTP %d", status)
+	}
+	var payload struct {
+		Data []struct {
+			ProxyID string `json:"proxy_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("decode provider account list: %w", err)
+	}
+	for _, account := range payload.Data {
+		if account.ProxyID != "" {
+			assigned[account.ProxyID]++
+		}
+	}
+	return assigned, nil
+}
+
+func (p *Panel) proxyList(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.ProxyPool == nil {
+		writeErr(w, http.StatusServiceUnavailable, "proxy pool is unavailable")
+		return
+	}
+	assigned := make(map[string]int)
+	for _, account := range p.cfg.Pool.List() {
+		assigned[account.ProxyID]++
+	}
+	providerAssigned, providerErr := p.providerProxyAssignments(r.Context())
+	for id, count := range providerAssigned {
+		assigned[id] += count
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"proxies": p.cfg.ProxyPool.List(), "assigned": assigned, "provider_accounts_available": providerErr == nil})
+}
+
+func (p *Panel) proxySave(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.ProxyPool == nil {
+		writeErr(w, http.StatusServiceUnavailable, "proxy pool is unavailable")
+		return
+	}
+	var input proxyImportRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, (64<<10)+1)).Decode(&input); err != nil || len(input.Text) > 64<<10 {
+		writeErr(w, http.StatusBadRequest, "invalid proxy pool import")
+		return
+	}
+	entries, err := proxypool.ParseText(input.Text)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	next := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		next[entry.ID] = true
+	}
+	// Never remove a route that an account is currently pinned to.
+	for _, account := range p.cfg.Pool.List() {
+		if account.ProxyID != "" && !next[account.ProxyID] {
+			writeErr(w, http.StatusConflict, "proxy "+account.ProxyID+" is still assigned to a WorkBuddy account")
+			return
+		}
+	}
+	providerAssigned, providerErr := p.providerProxyAssignments(r.Context())
+	if providerErr != nil {
+		writeErr(w, http.StatusServiceUnavailable, "cannot verify provider account assignments; retry after the provider host is healthy")
+		return
+	}
+	for id := range providerAssigned {
+		if !next[id] {
+			writeErr(w, http.StatusConflict, "proxy "+id+" is still assigned to a provider account")
+			return
+		}
+	}
+	saved, err := p.cfg.ProxyPool.ImportText(input.Text)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if p.cfg.Upstream != nil {
+		p.cfg.Upstream.ClearProxyClientCache()
+	}
+	log.Printf("panel: proxy pool saved entries=%d", len(saved))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxies": saved})
+}
+
+func (p *Panel) proxyTest(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.ProxyPool == nil {
+		writeErr(w, http.StatusServiceUnavailable, "proxy pool is unavailable")
+		return
+	}
+	var input proxyAssignRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid proxy test request")
+		return
+	}
+	ip, elapsed, err := p.cfg.ProxyPool.Test(r.Context(), input.ProxyID)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "proxy_id": input.ProxyID, "error": err.Error(), "latency_ms": elapsed.Milliseconds()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxy_id": input.ProxyID, "egress_ip": ip, "latency_ms": elapsed.Milliseconds()})
+}
+
+func (p *Panel) accountProxy(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.ProxyPool == nil {
+		writeErr(w, http.StatusServiceUnavailable, "proxy pool is unavailable")
+		return
+	}
+	uid := r.PathValue("uid")
+	a := p.cfg.Pool.AuthByUID(uid)
+	if a == nil {
+		writeErr(w, http.StatusNotFound, "account not found")
+		return
+	}
+	var input proxyAssignRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid proxy assignment")
+		return
+	}
+	if _, ok := p.cfg.ProxyPool.Get(input.ProxyID); !ok {
+		writeErr(w, http.StatusBadRequest, "unknown proxy ID")
+		return
+	}
+	a.SetProxyID(input.ProxyID)
+	if err := a.SaveAtomic(); err != nil {
+		writeErr(w, http.StatusInternalServerError, "failed to persist account proxy assignment")
+		return
+	}
+	if p.cfg.Upstream != nil {
+		p.cfg.Upstream.ClearProxyClientCache()
+	}
+	log.Printf("panel: account proxy assigned uid=%s proxy=%s", uid, input.ProxyID)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": uid, "proxy_id": input.ProxyID})
+}
+
+func (p *Panel) providerAccountProxy(w http.ResponseWriter, r *http.Request) {
+	p.providerProxy(w, r, "account/proxy")
 }
 
 // ---------------------------------------------------------------------------
