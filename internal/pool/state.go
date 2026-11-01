@@ -540,7 +540,8 @@ func (p *Pool) List() []Status {
 func (p *Pool) statusOf(uid string, e *entry) Status {
 	now := time.Now()
 	st := Status{
-		UID: uid,
+		UID:     uid,
+		ProxyID: e.a.ProxyIDValue(),
 		// 限额台账（issue #36）：仅「带解析时间 6004 的模型级软冷却」仍在生效时非空，
 		// 每模型一行（modelCooldowns 内未到期的条目），多模型同时限流全部展示。
 		// 到期判据 = 该模型的独立冷却 until 未过；条件满足才输出，随到期自然消失，

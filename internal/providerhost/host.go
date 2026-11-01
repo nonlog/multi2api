@@ -40,6 +40,10 @@ type Host struct {
 }
 
 func Start(bun, worker, authFile string, autoCheckin ...bool) (*Host, error) {
+	return StartWithProxy(bun, worker, authFile, len(autoCheckin) > 0 && autoCheckin[0], "", "", "")
+}
+
+func StartWithProxy(bun, worker, authFile string, autoCheckin bool, proxyEndpoint, proxyToken, proxyPoolFile string) (*Host, error) {
 	if bun == "" {
 		bun = "bun"
 	}
@@ -71,7 +75,10 @@ func Start(bun, worker, authFile string, autoCheckin ...bool) (*Host, error) {
 	cmd.Env = append(os.Environ(),
 		"WB2API_PROVIDER_SOCKET="+socket,
 		"WB2API_PROVIDER_AUTH_FILE="+authFile,
-		"WB2API_PROVIDER_AUTO_CHECKIN="+fmt.Sprint(len(autoCheckin) > 0 && autoCheckin[0]))
+		"WB2API_PROVIDER_AUTO_CHECKIN="+fmt.Sprint(autoCheckin),
+		"WB2API_PROXY_ENDPOINT="+proxyEndpoint,
+		"WB2API_PROXY_TOKEN="+proxyToken,
+		"WB2API_PROXY_POOL_FILE="+proxyPoolFile)
 	// Plugin diagnostics can contain upstream-issued tokens. Do not expose
 	// their stdout/stderr in the gateway logs or to downstream API callers.
 	cmd.Stdout = io.Discard
@@ -188,7 +195,7 @@ func (h *Host) Admin(ctx context.Context, method, endpoint string, body []byte) 
 	}
 	allowed := map[string]string{
 		"accounts": "GET", "methods": "GET", "login/start": "POST",
-		"login/poll": "POST", "login/callback": "POST", "login/cancel": "POST", "import": "POST", "account/action": "POST",
+		"login/poll": "POST", "login/callback": "POST", "login/cancel": "POST", "import": "POST", "account/action": "POST", "account/proxy": "POST",
 	}
 	bareEndpoint := strings.SplitN(endpoint, "?", 2)[0]
 	if allowed[bareEndpoint] != method || len(body) > 96<<10 {

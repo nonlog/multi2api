@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/nonlog/multi2api/internal/auth"
 	"github.com/nonlog/multi2api/internal/logfmt"
+	"github.com/nonlog/multi2api/internal/proxypool"
 )
 
 // ErrKind 错误分类，pool 据此决定冷却时长。
@@ -655,6 +657,11 @@ type Client struct {
 	// 与 HTTP 共享同一个 *http.Transport 实例，连接池不重复。
 	ChatHTTP *http.Client
 
+	// Per-account proxy clients are cached by stable proxy ID + URL.
+	proxyMu       sync.Mutex
+	proxyResolver func(string) (string, bool)
+	proxyClients  map[string]proxyClientPair
+
 	// HeaderTimeout 聊天 SSE 首字节前（响应头）超时；<=0 表示未设置（回落 HTTP.Timeout）。
 	HeaderTimeout time.Duration
 	// IdleTimeout 聊天 SSE 流中空闲超时；<=0 表示禁用空闲监控。
@@ -741,6 +748,7 @@ func New() *Client {
 	c := &Client{
 		HTTP:          &http.Client{Timeout: 120 * time.Second, Transport: tr},
 		ChatHTTP:      &http.Client{Timeout: 0, Transport: tr}, // 无总时长；首字节由 ResponseHeaderTimeout 管
+		proxyClients:  make(map[string]proxyClientPair),
 		ChatBaseCN:    "https://copilot.tencent.com",
 		BillingBaseCN: "https://www.codebuddy.cn",
 		WebBaseCN:     "https://www.workbuddy.cn",
@@ -759,6 +767,108 @@ func (c *Client) chatHTTP() *http.Client {
 	}
 	return c.HTTP
 }
+
+type proxyClientPair struct {
+	http      *http.Client
+	chat      *http.Client
+	transport *http.Transport
+}
+
+type errorRoundTripper struct{ err error }
+
+func (e errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) { return nil, e.err }
+
+// SetProxyResolver connects stable per-account proxy IDs to the persisted pool.
+// Missing IDs fail closed: a stale assignment must never silently leak DIRECT.
+func (c *Client) SetProxyResolver(resolve func(string) (string, bool)) {
+	c.proxyMu.Lock()
+	c.proxyResolver = resolve
+	c.closeProxyClientsLocked()
+	c.proxyClients = make(map[string]proxyClientPair)
+	c.proxyMu.Unlock()
+}
+
+// ClearProxyClientCache closes idle sockets after a pool edit and lets the next
+// request construct transports from the new endpoint definitions.
+func (c *Client) ClearProxyClientCache() {
+	c.proxyMu.Lock()
+	defer c.proxyMu.Unlock()
+	c.closeProxyClientsLocked()
+	c.proxyClients = make(map[string]proxyClientPair)
+}
+
+func (c *Client) closeProxyClientsLocked() {
+	for _, pair := range c.proxyClients {
+		if pair.transport != nil {
+			pair.transport.CloseIdleConnections()
+		}
+	}
+}
+
+func (c *Client) clientsForAuth(a *auth.Auth) proxyClientPair {
+	if a == nil {
+		return proxyClientPair{http: c.HTTP, chat: c.chatHTTP()}
+	}
+	id := a.ProxyIDValue()
+	if id == "" || id == "direct" {
+		return proxyClientPair{http: c.HTTP, chat: c.chatHTTP()}
+	}
+
+	c.proxyMu.Lock()
+	defer c.proxyMu.Unlock()
+	if c.proxyClients == nil {
+		c.proxyClients = make(map[string]proxyClientPair)
+	}
+	if c.proxyResolver == nil {
+		return failedProxyClients(c, fmt.Errorf("account proxy %q is configured but the proxy pool is unavailable", id))
+	}
+	raw, ok := c.proxyResolver(id)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return failedProxyClients(c, fmt.Errorf("account proxy %q is not present in the proxy pool", id))
+	}
+	key := id + "\x00" + raw
+	if pair, ok := c.proxyClients[key]; ok {
+		return pair
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		if err == nil {
+			err = fmt.Errorf("invalid proxy URL")
+		}
+		return failedProxyClients(c, fmt.Errorf("account proxy %q: %w", id, err))
+	}
+	tr := newTransport()
+	// Match the shared ChatHTTP transport's configured TTFT/header deadline.
+	// The per-account transport must not silently fall back to the constructor default.
+	tr.ResponseHeaderTimeout = c.HeaderTimeout
+	// Use the same explicit SOCKS5 dialer as the provider bridge. This guarantees
+	// socks5h sends hostnames to the proxy instead of relying on Transport.Proxy's
+	// scheme-specific DNS behavior.
+	tr.DialContext = func(ctx context.Context, network, target string) (net.Conn, error) {
+		if network != "tcp" && network != "tcp4" && network != "tcp6" {
+			return nil, fmt.Errorf("unsupported proxy transport network %q", network)
+		}
+		return proxypool.DialContext(ctx, raw, target)
+	}
+	baseHTTP := c.HTTP
+	baseChat := c.chatHTTP()
+	httpClient := &http.Client{Timeout: baseHTTP.Timeout, Transport: tr, Jar: baseHTTP.Jar, CheckRedirect: baseHTTP.CheckRedirect}
+	chatClient := &http.Client{Timeout: baseChat.Timeout, Transport: tr, Jar: baseChat.Jar, CheckRedirect: baseChat.CheckRedirect}
+	pair := proxyClientPair{http: httpClient, chat: chatClient, transport: tr}
+	c.proxyClients[key] = pair
+	return pair
+}
+
+func failedProxyClients(c *Client, err error) proxyClientPair {
+	rt := errorRoundTripper{err: err}
+	return proxyClientPair{
+		http: &http.Client{Timeout: c.HTTP.Timeout, Transport: rt},
+		chat: &http.Client{Timeout: c.chatHTTP().Timeout, Transport: rt},
+	}
+}
+
+func (c *Client) httpFor(a *auth.Auth) *http.Client     { return c.clientsForAuth(a).http }
+func (c *Client) chatHTTPFor(a *auth.Auth) *http.Client { return c.clientsForAuth(a).chat }
 
 // defaultGlobalBase 缺省 global base（D5：config 未覆盖时默认 workbuddy.ai）。
 const defaultGlobalBase = "https://www.workbuddy.ai"
@@ -911,7 +1021,15 @@ func (c *Client) webBase(a *auth.Auth) string {
 // body 读失败（连接中断/空闲掐流/截断）返回普通错误（非 *Error）——半截 body 不进
 // Classify，不参与账号惩罚（传输层故障不该喂熔断误罚号）。
 func (c *Client) doJSON(req *http.Request) (json.RawMessage, error) {
-	resp, err := c.HTTP.Do(req)
+	return c.doJSONWithClient(c.HTTP, req)
+}
+
+func (c *Client) doJSONFor(a *auth.Auth, req *http.Request) (json.RawMessage, error) {
+	return c.doJSONWithClient(c.httpFor(a), req)
+}
+
+func (c *Client) doJSONWithClient(client *http.Client, req *http.Request) (json.RawMessage, error) {
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1070,7 +1188,7 @@ func (c *Client) refreshTokenOnce(a *auth.Auth) error {
 	c.RefreshHeaders(req, &hdrSnapshot)
 
 	// 网络 I/O（锁外，30s 上限）。
-	data, err := c.doJSON(req)
+	data, err := c.doJSONFor(a, req)
 	if err != nil {
 		return err
 	}
@@ -1166,14 +1284,15 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 		// 同时 monitorBody.Close 仍能独立 cancel 本分支（空闲掐流）。
 		reqCtx, cancel := context.WithCancel(ctx)
 		req = req.WithContext(reqCtx)
-		resp, err := c.chatHTTP().Do(req)
+		chatClient := c.chatHTTPFor(a)
+		resp, err := chatClient.Do(req)
 		if err != nil {
 			cancel()
 			log.Printf("ERR: [upstream] chat_stream acct=%s: transport error: %v", logfmt.Label(a.UID, a.Nickname), err)
 			// 传输层失败 → 清空共享连接池的空闲连接（连接层加固）：失败连接可能仍
 			// 留在空闲池里，下一个请求会继续捡到它——仅靠 IdleConnTimeout 等过期
 			// 不够，主动清池才断根。
-			roundTripCloseIdle(c.chatHTTP().Transport)
+			roundTripCloseIdle(chatClient.Transport)
 			return nil, 0, nil, err
 		}
 		if resp.StatusCode >= 400 {
@@ -1455,7 +1574,7 @@ func (c *Client) fetchEnterpriseModels(a *auth.Auth) ([]ModelInfo, error) {
 	c.CommonHeaders(req, a) // 复用共享请求头（Origin/Referer/UA/Accept/Content-Type）
 	// AccessToken 加锁快照（见 auth.AccessTokenValue：keepalive 刷新在 a.mu 内改写）。
 	req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.httpFor(a).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1809,7 +1928,7 @@ func (c *Client) fetchV3ConfigModelMap(a *auth.Auth, ua string) (map[string]Mode
 	}
 	req.Header.Set("User-Agent", ua)
 	c.injectCodeBuddyRequest(req)
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.httpFor(a).Do(req)
 	if err != nil {
 		return nil, err
 	}

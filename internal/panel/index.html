@@ -707,6 +707,44 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
 #providerAccountBox .pv-menu .pv-separator { height: 1px; margin: 4px 8px; background: var(--line-soft); }
 #providerAccountBox .pv-list-empty { padding: 44px 18px; text-align: center; color: var(--ink-3); font-size: 13px; }
 #providerAccountBox .pv-footnote { padding: 12px 24px 16px; border-top: 1px solid var(--line-soft); font-size: 11.5px; color: var(--ink-3); line-height: 1.7; }
+/* Named proxy pool and account-level egress selectors. */
+#providerAccountBox .pv-column-titles { grid-template-columns:minmax(230px,1.85fr) minmax(130px,.9fr) minmax(190px,1.1fr) minmax(150px,.9fr) 42px; }
+#providerAccountBox .pv-row { grid-template-columns:minmax(230px,1.85fr) minmax(130px,.9fr) minmax(190px,1.1fr) minmax(150px,.9fr) 42px; }
+#providerAccountBox .pv-proxy-cell { min-width:0; }
+.proxy-select { width:100%; min-width:105px; min-height:31px; padding:5px 26px 5px 9px; border:1px solid var(--line); border-radius:8px; background:var(--surface-2); color:var(--ink-2); font-size:11.5px; }
+.proxy-select:focus { outline:2px solid color-mix(in srgb,var(--accent),transparent 65%); border-color:var(--accent); }
+.proxy-select:disabled { opacity:.55; }
+#proxyVeil { background:rgba(7,10,18,.67); backdrop-filter:blur(5px); }
+#proxyVeil .proxy-dlg { width:min(760px,calc(100vw - 26px)); border-radius:16px; background:var(--surface); border-color:var(--line); overflow:hidden; box-shadow:0 28px 90px rgba(0,0,0,.3); }
+#proxyVeil .proxy-dlg header { padding:22px 25px 15px; }
+#proxyVeil .proxy-dlg header h3 { font-size:18px; font-weight:680; }
+#proxyVeil .proxy-dlg header p { color:var(--ink-3); font-size:12px; margin-top:6px; line-height:1.65; }
+#proxyVeil .proxy-dlg .body { padding:18px 25px; }
+#proxyVeil textarea { width:100%; min-height:165px; resize:vertical; border:1px solid var(--line); border-radius:10px; padding:12px 14px; background:var(--surface-2); color:var(--ink); font:12px/1.7 var(--mono); }
+#proxyVeil .proxy-pool-hint { color:var(--ink-3); font-size:11.5px; line-height:1.6; margin:9px 0 15px; }
+#proxyVeil .proxy-pool-list { border:1px solid var(--line-soft); border-radius:11px; overflow:hidden; }
+#proxyVeil .proxy-entry { display:grid; grid-template-columns:minmax(110px,.8fr) minmax(0,2fr) 90px 72px; align-items:center; gap:10px; padding:9px 12px; border-top:1px solid var(--line-soft); font-size:12px; }
+#proxyVeil .proxy-entry:first-child { border-top:0; }
+#proxyVeil .proxy-entry .proxy-name { font-weight:600; color:var(--ink-2); }
+#proxyVeil .proxy-entry code { color:var(--ink-3); font-size:11px; overflow-wrap:anywhere; }
+#proxyVeil .proxy-entry .proxy-assigned { color:var(--ink-3); font-size:11px; text-align:right; }
+#proxyVeil .proxy-entry .proxy-test { min-height:29px; padding:4px 8px; border-radius:7px; font-size:11px; }
+#proxyVeil .proxy-entry .proxy-result { grid-column:2/5; color:var(--ink-3); font-size:11px; overflow-wrap:anywhere; }
+#proxyVeil .proxy-dlg footer { display:flex; justify-content:flex-end; gap:9px; padding:15px 25px 18px; background:color-mix(in srgb,var(--surface),var(--surface-2) 35%); border-top:1px solid var(--line-soft); }
+#proxyVeil .proxy-dlg footer button { border-radius:9px; min-height:36px; padding:6px 14px; }
+@media (max-width:1040px) {
+ #providerAccountBox .pv-column-titles { display:none; }
+ #providerAccountBox .pv-row { grid-template-columns:minmax(200px,2fr) minmax(120px,.9fr) minmax(140px,1.3fr) minmax(130px,.9fr) 40px; gap:10px; }
+}
+@media (max-width:670px) {
+ #providerAccountBox .pv-row { grid-template-columns:minmax(0,1fr) 42px; }
+ #providerAccountBox .pv-proxy-cell { grid-column:1/-1; }
+ #proxyVeil .proxy-entry { grid-template-columns:minmax(0,1fr) 70px; gap:7px; }
+ #proxyVeil .proxy-entry code { grid-column:1/-1; grid-row:2; }
+ #proxyVeil .proxy-entry .proxy-assigned { grid-column:1; grid-row:3; text-align:left; }
+ #proxyVeil .proxy-entry .proxy-test { grid-column:2; grid-row:3; }
+ #proxyVeil .proxy-entry .proxy-result { grid-column:1/-1; }
+}
 /* Credentials modal: one primary action and one quiet dismiss control. */
 #addVeil { background: rgba(7,10,18,.67); backdrop-filter: blur(5px); }
 #addVeil .dlg { width: min(560px,calc(100vw - 26px)) !important; border-radius: 18px; background: var(--surface); border-color: var(--line); overflow: hidden; box-shadow: 0 28px 90px rgba(0,0,0,.3); }
@@ -847,13 +885,14 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           </div>
           <span class="grow"></span>
           <span class="pv-sync-info" id="pvSyncInfo" role="status" aria-live="polite">自动同步额度</span>
+          <button type="button" class="pv-soft-button" id="btnProxyPool" title="管理 SOCKS5 代理池">代理池</button>
           <button type="button" class="pv-soft-button" id="btnProviderAccounts" title="刷新账号及额度">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-3.8L3 9"/><path d="M3 4v5h5"/><path d="M4 13a8 8 0 0 0 14.9 3.8L21 15"/><path d="M16 15h5v5"/></svg>刷新
           </button>
           <button type="button" class="primary pv-add-button" id="btnAddProvider"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>添加账号</button>
         </header>
         <div class="pv-filter-rail" id="providerSummary" role="toolbar" aria-label="按平台筛选"></div>
-        <div class="pv-column-titles" aria-hidden="true"><span>账号</span><span>授权状态</span><span>套餐与额度</span><span></span></div>
+        <div class="pv-column-titles" aria-hidden="true"><span>账号</span><span>授权状态</span><span>套餐与额度</span><span>出口代理</span><span></span></div>
         <div class="pv-list" id="providerAccountBody" role="list" aria-live="polite"><div class="pv-list-empty">正在载入账号与额度…</div></div>
         <div class="pv-footnote">额度打开页面后自动查询，刷新结果会短时缓存；授权状态以实际请求结果为准。WorkBuddy 的积分与成长任务独立保留在下方。</div>
       </div>
@@ -886,7 +925,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           <thead><tr>
             <th class="mark" aria-hidden="true"></th>
             <th>账号</th><th>状态</th><th>积分</th>
-            <th>成功 / 失败</th><th>在途</th><th>用量</th><th>最近成功</th><th class="c-acts"></th>
+            <th>成功 / 失败</th><th>在途</th><th>用量</th><th>最近成功</th><th>出口代理</th><th class="c-acts"></th>
           </tr></thead>
           <tbody id="accBody"></tbody>
         </table>
@@ -1476,7 +1515,20 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
 </div>
 
 <!-- 添加账号 -->
-<div class="veil" id="addVeil">
+<div class="veil" id="proxyVeil">
+      <div class="dlg proxy-dlg">
+        <header><h3>代理池管理</h3><p>管理命名 SOCKS5 出口，并为 WorkBuddy 与多平台账号分别绑定代理。DIRECT 表示不走代理。</p></header>
+        <div class="body">
+          <label class="fld"><span class="lb">代理池配置（每行一个，格式：名称 | socks5h://主机:端口）</span>
+            <textarea id="proxyPoolText" rows="8" spellcheck="false" placeholder="DIRECT&#10;US WARP | socks5h://172.18.0.1:56356"></textarea>
+          </label>
+          <div class="proxy-pool-hint">删除代理前必须先将所有绑定该代理的账号切换到其他出口。保存后会立即应用，不需要重启网关。</div>
+          <div class="proxy-pool-list" id="proxyPoolList"><div class="pv-list-empty">正在载入代理池…</div></div>
+        </div>
+        <footer><button type="button" id="btnCloseProxyPool">关闭</button><button type="button" class="primary" id="btnSaveProxyPool">保存代理池</button></footer>
+      </div>
+    </div>
+    <div class="veil" id="addVeil">
   <div class="dlg">
     <header>
       <h3>连接账号</h3><div class="pv-modal-subtitle">选择平台并授权账号，完成后会自动加入账号池</div>

@@ -22,6 +22,7 @@ import (
 	"github.com/nonlog/multi2api/internal/panel"
 	"github.com/nonlog/multi2api/internal/pool"
 	"github.com/nonlog/multi2api/internal/providerhost"
+	"github.com/nonlog/multi2api/internal/proxypool"
 	"github.com/nonlog/multi2api/internal/redisstore"
 	"github.com/nonlog/multi2api/internal/reqlog"
 	"github.com/nonlog/multi2api/internal/scheduler"
@@ -32,7 +33,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.13.7-panel"
+const appVersion = "1.13.8-panel"
 
 // usagePathFor 由 state 文件路径推出用量文件路径：同目录、文件名 usage.json。
 // 这样 config 里改 state_file 时用量数据跟着走，不需要额外配置项。
@@ -79,13 +80,26 @@ func main() {
 	}
 	log.Printf("loaded %d account(s) from %s", len(auths), cfg.AuthDir)
 
+	proxyPool, err := proxypool.New(stateSibling(cfg.StateFile, "proxy-pool.json"))
+	if err != nil {
+		log.Fatalf("load proxy pool: %v", err)
+	}
+	log.Printf("proxy pool loaded: %d named route(s)", len(proxyPool.List()))
+
+	var providerProxy *proxypool.LocalProxy
 	var externalProviders *providerhost.Host
 	if cfg.Providers.Enabled {
 		authFile := cfg.Providers.AuthFile
 		if authFile == "" {
 			authFile = stateSibling(cfg.StateFile, "provider-auth.json")
 		}
-		externalProviders, err = providerhost.Start(cfg.Providers.Bun, cfg.Providers.Worker, authFile, cfg.Providers.AutoCheckin)
+		providerProxy, err = proxypool.StartLocalProxy(proxyPool)
+		if err != nil {
+			log.Fatalf("start provider proxy bridge: %v", err)
+		}
+		defer providerProxy.Close()
+		externalProviders, err = providerhost.StartWithProxy(cfg.Providers.Bun, cfg.Providers.Worker, authFile,
+			cfg.Providers.AutoCheckin, providerProxy.Endpoint(), providerProxy.Token(), stateSibling(cfg.StateFile, "proxy-pool.json"))
 		if err != nil {
 			log.Fatalf("start integrated providers: %v", err)
 		}
@@ -147,6 +161,13 @@ func main() {
 	}
 
 	up := upstream.New()
+	up.SetProxyResolver(func(id string) (string, bool) {
+		entry, ok := proxyPool.Get(id)
+		if !ok {
+			return "", false
+		}
+		return entry.URL, true
+	})
 
 	// 积分保底的「收费」兜底判据：接上游模型目录的积分倍率表。本地实测台账无观测
 	// 时用它判收费——否则「没学过」恒等于「放行」，高价新模型会把触底号一笔打穿
@@ -293,6 +314,7 @@ func main() {
 		// 与 state 文件同目录，缺省 data/output_probes.json。
 		ProbeFile:    stateSibling(cfg.StateFile, "output_probes.json"),
 		ProviderHost: externalProviders,
+		ProxyPool:    proxyPool,
 		ConfigPath:   *cfgPath,
 		LoadConfig: func() (any, error) {
 			return Load(*cfgPath)

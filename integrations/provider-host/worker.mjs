@@ -5,6 +5,7 @@
 import { readFile, rename, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { randomUUID } from "node:crypto"
+import { AsyncLocalStorage } from "node:async_hooks"
 import { ZCodeAuthPlugin } from "../magpie-plugins/zcode/index.mjs"
 import {
   QoderAuthPlugin, QoderCNAuthPlugin, QwenWorkAuthPlugin,
@@ -17,6 +18,9 @@ const SOCKET = process.env.WB2API_PROVIDER_SOCKET
 const AUTH_FILE = process.env.WB2API_PROVIDER_AUTH_FILE
 const MAINTENANCE_FILE = process.env.WB2API_PROVIDER_MAINTENANCE_FILE || join(dirname(AUTH_FILE || "."), "provider-maintenance.json")
 const AUTO_CHECKIN = process.env.WB2API_PROVIDER_AUTO_CHECKIN === "true"
+const PROXY_ENDPOINT = process.env.WB2API_PROXY_ENDPOINT || ""
+const PROXY_TOKEN = process.env.WB2API_PROXY_TOKEN || ""
+const PROXY_POOL_FILE = process.env.WB2API_PROXY_POOL_FILE || join(dirname(AUTH_FILE || "."), "proxy-pool.json")
 const PROVIDERS = Object.freeze({
   zcode: ZCodeAuthPlugin,
   qoder: QoderAuthPlugin,
@@ -43,6 +47,36 @@ const pluginInstances = new Map()
 const modelCache = new Map()
 const roundRobin = new Map()
 const browserLogins = new Map()
+
+// Every account-scoped plugin request inherits its selected proxy through
+// AsyncLocalStorage. This also covers plugin-internal global fetch calls.
+const proxyContext = new AsyncLocalStorage()
+const nativeFetch = globalThis.fetch.bind(globalThis)
+globalThis.fetch = (input, init) => {
+  const proxy = proxyContext.getStore()
+  if (proxy === undefined || proxy === false) return nativeFetch(input, init)
+  return nativeFetch(input, { ...(init || {}), proxy })
+}
+
+function withAccountProxy(accountKey, fn) {
+  const id = String(credentials[accountKey]?.proxy_id || "direct")
+  if (id === "direct") return proxyContext.run(false, fn)
+  if (!PROXY_ENDPOINT || !PROXY_TOKEN) throw new Error("account proxy bridge is unavailable")
+  const proxyURL = new URL(PROXY_ENDPOINT)
+  proxyURL.username = id
+  proxyURL.password = PROXY_TOKEN
+  // Bun 1.3.3 supports the proxy URL form; its object form was not yet
+  // implemented consistently across the supported runtime versions.
+  return proxyContext.run(proxyURL.toString(), fn)
+}
+
+async function allowedProxyID(id) {
+  if (typeof id !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) return false
+  try {
+    const entries = JSON.parse(await readFile(PROXY_POOL_FILE, "utf8"))
+    return Array.isArray(entries) && entries.some(entry => entry?.id === id)
+  } catch { return false }
+}
 
 function allProviderKeys(id) {
   return Object.keys(credentials).filter(k => k === id || k.startsWith(id + "#"))
@@ -88,7 +122,11 @@ async function saveAuth(key, next, { enable = false } = {}) {
     // A late upstream refresh must not resurrect an account removed by the
     // operator while that request was in-flight.
     if (!enable && !Object.hasOwn(store, key)) return
-    store[key] = { ...next, disabled: !enable && store[key]?.disabled === true }
+    const previous = store[key] || {}
+    store[key] = { ...next,
+      ...(next.proxy_id === undefined && previous.proxy_id ? { proxy_id: previous.proxy_id } : {}),
+      disabled: !enable && previous.disabled === true,
+    }
   })
 }
 
@@ -132,6 +170,7 @@ function publicAccount(id, key) {
     provider: id, account: key,
     label: String(a.cardName || a.name || a.email || a.accountId || a.uid || key).slice(0, 120),
     disabled: a.disabled === true, type: a.type || "oauth",
+    proxy_id: String(a.proxy_id || "direct"),
     state: expired ? "login_expired" : "unverified",
     checkin: note?.outcome || "not_run", checkin_supported: maintenanceEligible(id),
   }
@@ -316,6 +355,18 @@ async function adminImport(req) {
   return responses(200, { imported: 1, provider: id, account: key })
 }
 
+async function adminAccountProxy(req) {
+  const { provider: id, account, proxy_id: proxyID } = await req.json()
+  if (!PROVIDERS[id] || !allProviderKeys(id).includes(account))
+    return responses(404, { error: "账号不存在" })
+  if (!(await allowedProxyID(proxyID)))
+    return responses(400, { error: "代理池中不存在该代理" })
+  await changeAuth(store => {
+    store[account] = { ...store[account], proxy_id: proxyID }
+  })
+  return responses(200, { ok: true, provider: id, account, proxy_id: proxyID })
+}
+
 async function adminAccountAction(req) {
   const { provider: id, account, action } = await req.json()
   if (!PROVIDERS[id] || !allProviderKeys(id).includes(account))
@@ -381,6 +432,7 @@ function maintenanceEligible(id) {
 }
 
 async function checkinAccount(id, key, { force = false } = {}) {
+  return withAccountProxy(key, async () => {
   const today = calendarDay()
   if (!maintenanceEligible(id)) return { outcome: "unsupported", message: "upstream plugin does not support check-in" }
   const existing = maintenance.checkins[key]
@@ -397,6 +449,7 @@ async function checkinAccount(id, key, { force = false } = {}) {
   } finally {
     maintenanceBusy.delete(key)
   }
+  })
 }
 
 async function autoCheckin() {
@@ -443,10 +496,10 @@ async function handleUsage(url) {
         const { plugin, provider } = await configuredPlugin(id, key)
         if (typeof plugin.auth?.usage !== "function") value = { error: "usage query unsupported", windows: [] }
         else {
-          const read = await Promise.race([
+          const read = await withAccountProxy(key, () => Promise.race([
             plugin.auth.usage(async () => credentials[key], provider),
             new Promise((_, reject) => setTimeout(() => reject(new Error("quota request timeout")), id === "codearts" ? 75_000 : 30_000)),
-          ])
+          ]))
           value = publicUsage(read)
         }
       } catch { value = { error: "provider usage request failed", windows: [] } }
@@ -529,10 +582,10 @@ async function listModels(id, key) {
     if (typeof plugin.provider?.models === "function") {
       // On a dead/offline account, retain the plugin's static catalogue.
       // Never propagate credentials or raw errors to the public models API.
-      const runtime = await Promise.race([
+      const runtime = await withAccountProxy(key, () => Promise.race([
         plugin.provider.models(provider, { auth: currentAuth }),
         new Promise((_, reject) => setTimeout(() => reject(new Error("model listing timed out")), 6000)),
-      ])
+      ]))
       if (runtime && typeof runtime === "object") models = runtime
     }
   } catch {}
@@ -554,6 +607,7 @@ async function handleChat(req, id) {
   if (!PROVIDERS[id]) return responses(404, { error: { message: "unknown provider" } })
   const key = pickAccount(id)
   if (!key) return responses(503, { error: { message: "no imported provider credential", type: "provider_unavailable" } })
+  return withAccountProxy(key, async () => {
   let chat
   try { chat = await req.json() }
   catch { return responses(400, { error: { message: "invalid Chat Completions JSON" } }) }
@@ -591,6 +645,7 @@ async function handleChat(req, id) {
     })
   }
   return responses(200, anthroResultToChat(await output.json(), requestedModel))
+  })
 }
 
 async function dispatch(req) {
@@ -604,6 +659,7 @@ async function dispatch(req) {
   if (req.method === "POST" && path === "/admin/login/cancel") return adminLoginCancel(req)
   if (req.method === "POST" && path === "/admin/import") return adminImport(req)
   if (req.method === "POST" && path === "/admin/account/action") return adminAccountAction(req)
+  if (req.method === "POST" && path === "/admin/account/proxy") return adminAccountProxy(req)
   if (req.method === "GET" && path === "/health") {
     return responses(200, { ready: true, providers: Object.keys(PROVIDERS), credential_count: Object.keys(credentials).length })
   }
@@ -674,3 +730,10 @@ export async function start() {
 }
 
 if (import.meta.main) await start()
+
+export const _internal = {
+  withAccountProxy,
+  allowedProxyID,
+  // Exercise the same unqualified global fetch binding used by the bundled plugins.
+  providerFetch: (input, init) => fetch(input, init),
+}
