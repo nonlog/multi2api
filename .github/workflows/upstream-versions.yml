@@ -1,9 +1,10 @@
 name: upstream-versions
 
-# 每周一（北京时间 10:00）对比仓库里固定的 ZCode / Qoder 客户端版本与官方发布，
-# 落后时开（或更新）一个 issue。只提醒，不自动改版本号、不自动合并：
-# 出站请求头必须与对应官方版本的真实形状一起核验，单改版本号会造成特征不一致。
-# 覆盖范围见 scripts/check_upstream_versions.sh 顶部注释。
+# 每周一（北京时间 10:00）对比仓库里固定的 ZCode / Qoder 客户端版本与官方发布。
+# 落后时让本次运行失败（GitHub 会发运行失败通知），并在运行摘要里列出差异表。
+# 只提醒，不自动改版本号、不自动合并：出站请求头必须与对应官方版本的真实形状
+# 一起核验，单改版本号会造成特征不一致。覆盖范围见 scripts/check_upstream_versions.sh。
+# 本仓库关闭了 Issues，所以用失败状态而不是 issue 作为提醒。
 on:
   schedule:
     - cron: "0 2 * * 1"
@@ -11,40 +12,31 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   check:
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
-      TITLE: "Vendor client versions are behind official releases"
     steps:
       - uses: actions/checkout@v4
-      - name: Compare versions and sync the tracking issue
+      - name: Compare pinned versions with official releases
         run: |
           set -euo pipefail
           rows=$(bash scripts/check_upstream_versions.sh)
-          number=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number,title \
-            --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
           if [ -z "$rows" ]; then
-            [ -n "$number" ] && gh issue close "$number" --comment "All tracked vendor versions match the official releases again."
+            echo "All tracked vendor versions match the official releases." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           {
-            echo "Weekly check found tracked clients that are behind the official release."
+            echo "### Vendor client versions are behind official releases"
             echo
             echo "| Vendor | Pinned in | Repo | Official |"
             echo "|---|---|---|---|"
             printf '%s\n' "$rows"
             echo
-            echo "Do not bump the number alone. For each item, confirm the new build's real request headers"
+            echo "Do not bump the number alone. Confirm the new build's real request headers"
             echo "(and, for Qoder, the worker runtime version it ships) before changing the constant."
             echo
             echo "Not tracked automatically (no public version source): WorkBuddy desktop/CLI, CodeArts plugin."
-          } > body.md
-          if [ -n "$number" ]; then
-            gh issue edit "$number" --body-file body.md
-          else
-            gh issue create --title "$TITLE" --body-file body.md
-          fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Tracked vendor client versions are behind official releases; see the run summary."
+          exit 1
