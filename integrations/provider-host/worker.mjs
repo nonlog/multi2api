@@ -604,6 +604,11 @@ export async function start() {
   }
   const server = Bun.serve({
     unix: SOCKET,
+    // Bun closes a request that is silent for 10s by default. /usage (several
+    // vendor calls over WARP, up to 30s each) and non-streaming chat can run
+    // longer, which surfaced as HTTP 502 in the Go gateway. 255 is Bun's max;
+    // the Go side enforces the real deadlines (40s/90s/105s).
+    idleTimeout: 255,
     async fetch(req) {
       try { return await dispatch(req) }
       catch (error) {
