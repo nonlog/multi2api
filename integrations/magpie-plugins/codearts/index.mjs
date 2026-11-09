@@ -2879,6 +2879,7 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
                     refresh: cred.refresh_token,
                     expires: outcome.expires,
                     accountId: identity.id,
+                    ...(identity.name ? { cardName: identity.name } : {}),
                     ...(identity.id ? { uid: identity.id } : {}),
                   }
                 } catch (e) {
@@ -2920,6 +2921,7 @@ async function persistCredential(client, account, cred) {
     refresh: cred.refresh_token,
     expires: expiresFromCredential(cred),
     ...(accountId ? { accountId } : {}),
+    ...(identity.name ? { cardName: identity.name } : {}),
     ...(uid ? { uid } : {}),
   }
   try {

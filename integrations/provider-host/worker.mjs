@@ -166,9 +166,10 @@ function publicAccount(id, key) {
   const a = credentials[key]
   const note = maintenance.checkins[key]
   const expired = note?.outcome === "failed" && /sign-in has expired|status 401/i.test(note.message || "")
+  const usageUser = usageCache.get(id + "\0" + key)?.value?.user
   return {
     provider: id, account: key,
-    label: String(a.cardName || a.name || a.email || a.accountId || a.uid || key).slice(0, 120),
+    label: String(a.cardName || a.phoneLabel || a.name || a.email || usageUser || a.accountId || a.uid || key).slice(0, 120),
     disabled: a.disabled === true, type: a.type || "oauth",
     proxy_id: String(a.proxy_id || "direct"),
     state: expired ? "login_expired" : "unverified",
@@ -188,7 +189,7 @@ async function loginMethods(id) {
   const plugin = await PROVIDERS[id]({ client: runtimeClient("__login_" + id) })
   return (plugin.auth?.methods || []).map((m, index) => ({ ...m, index }))
     .filter(m => m.type === "oauth" && typeof m.authorize === "function" &&
-      !/app's sign-in/i.test(m.label || ""))
+      !/app's sign-in|dedicated domain/i.test(m.label || ""))
 }
 
 async function adminMethods(req) {
@@ -248,7 +249,10 @@ async function adminLoginStart(req) {
   if (!method) return responses(400, { error: "该 Provider 不支持此浏览器登录方式，可导入官方凭据" })
   let flow
   try { flow = await method.authorize(inputs) }
-  catch { return responses(502, { error: "无法向官方平台发起授权，请使用官方客户端登录后导入凭据" }) }
+  catch (error) {
+    const failure = loginFailure(PV_LOGIN_NAMES[id] || id, error)
+    return responses(400, { error: failure.message, code: failure.code })
+  }
   if (!flow?.url || !/^https:\/\//i.test(flow.url) || typeof flow.callback !== "function")
     return responses(502, { error: "官方登录未返回安全的授权链接" })
   const state = randomUUID()
@@ -501,6 +505,9 @@ async function handleUsage(url) {
             new Promise((_, reject) => setTimeout(() => reject(new Error("quota request timeout")), id === "codearts" ? 75_000 : 30_000)),
           ]))
           value = publicUsage(read)
+          if (value.user && !credentials[key]?.cardName) {
+            await saveAuth(key, { ...credentials[key], cardName: value.user })
+          }
         }
       } catch { value = { error: "provider usage request failed", windows: [] } }
       usageCache.set(cacheKey, { value, at: Date.now() })

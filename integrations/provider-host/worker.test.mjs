@@ -91,6 +91,19 @@ test("all real bundled plugins initialize behind the same private Unix socket", 
     const qoderMethods = await fetch("http://localhost/admin/methods?provider=qoder", { unix: socket })
     const methodData = await qoderMethods.json()
     expect(methodData.methods.some(m => /PAT/i.test(m.label))).toBe(true)
+    const qoderDevice = await fetch("http://localhost/admin/login/start", {
+      unix: socket, method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "qoder", method: methodData.methods[0].id }),
+    })
+    expect(qoderDevice.status).toBe(200)
+    const qoderFlow = await qoderDevice.json()
+    expect(new URL(qoderFlow.url).searchParams.get("client_id")).toBe("e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb")
+    await fetch("http://localhost/admin/login/cancel", {
+      unix: socket, method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ state: qoderFlow.state }),
+    })
+    const qoderCnMethods = await (await fetch("http://localhost/admin/methods?provider=qoder-cn", { unix: socket })).json()
+    expect(qoderCnMethods.methods.some(m => /dedicated domain/i.test(m.label))).toBe(false)
     const cancel = await fetch("http://localhost/admin/login/cancel", {
       unix:socket, method:"POST", headers:{"content-type":"application/json"},
       body:JSON.stringify({state:"not-a-valid-existing-login"}),

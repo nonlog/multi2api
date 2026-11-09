@@ -3050,14 +3050,12 @@ const SITES = {
   qoder: {
     id: "qoder",
     name: "Qoder",
-    clientId: "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa",
+    clientId: "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb",
     web: "https://qoder.com",
     openapi: "https://openapi.qoder.sh",
     api: "https://api3.qoder.sh",
-    // none, as Qoder's CLI (@qoder-ai/qodercli 1.1.75) sends: the desktop
-    // app's qoder-app:// hands the finished page to Qoder.app, when it is
-    // installed, instead of leaving it in the tab while this polls (#276)
     redirect: "",
+    deviceOnly: true,
     models: MODELS,
   },
   "qoder-cn": {
@@ -3069,6 +3067,7 @@ const SITES = {
     openapi: "https://openapi.qoder.com.cn",
     api: "https://gateway.qoder.com.cn",
     redirect: "", // Qoder CN's CLI sends none
+    deviceOnly: true,
     deviceChat: true, // a refused job token falls back to the CLI's device-token chat
     // an enterprise's own instance, <instance>.vpc.qoder.com.cn and its
     // -openapi and -gateway hosts, as Qoder CN's CLI builds it in
