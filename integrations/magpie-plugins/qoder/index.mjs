@@ -48,10 +48,10 @@ const MODELS_PATH = "/algo/api/v2/model/list?Encode=1"
 // talks through — the worker runtime bundled in the app — because the
 // envelope also says Cosy-ClientType: 10 (desktop) and carries that app's
 // machine identity; the CLI's channel publishes a different, later number
-// that no desktop build runs. Taken from app 0.5.6 (build 87003794,
-// 2026-11-06), whose transport config names 1.1.79-hotfix.18. Raise it when the app
+// that no desktop build runs. Taken from app 0.5.7 (build 87859893,
+// 2026-11-09), whose transport config names 1.1.79-hotfix.19. Raise it when the app
 // moves, not when the CLI does.
-const COSY_VERSION = "1.1.79-hotfix.18"
+const COSY_VERSION = "1.1.79-hotfix.19"
 const SIGN_IN_TIMEOUT = 15 * 60 * 1000
 const REFRESH_LEAD = 5 * 60 * 1000 // a chat token this close to its end is refreshed before a request
 const RENEW_LEAD = 10 * 60 * 1000 // and this close, magpie renews it ahead of time (auth.refresh)
@@ -518,7 +518,7 @@ async function lingmaRead(site, roots = lingmaRoots()) {
 const lingmaLive = (got, now = Date.now()) => !got.expires || got.expires - now > LINGMA_LEAD
 
 // lingmaAccount is the account a read gives for the domain at origin.
-function lingmaAccount(site, origin, got) {
+function lingmaAccount(_site, origin, got) {
   const host = new URL(origin).host
   return {
     type: "success",
