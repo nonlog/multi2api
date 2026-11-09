@@ -83,6 +83,12 @@ Refreshing:
   full, the listing can have only the free models on (#484). The same
   5-minute rule holds, and an id Qoder has never served is said unknown at
   once, with no renewal.
+- The account's model list (what magpie and its agents see) is read the
+  same way (since 0.2.52): a listing with every model that costs credits
+  off and the free ones on, which is what Qoder CN answers a caller it
+  doesn't take for the account, renews the job token once and is read
+  again. A renewed token that still lists only the free models isn't
+  renewed again for the list.
 - The device token, which reads usage, has no end on record: it is rotated
   when Qoder refuses it. On a [Qoder CN](#qoder-cn) device-token account it
   is the chat token too, and is renewed as above.
@@ -132,7 +138,10 @@ itself.
   - The model's own configuration from Qoder's list goes with it.
 - It picks the reasoning effort from the model's own levels:
   - The nearest level to the one asked, the higher one on a tie.
-  - The model's default when none is asked.
+  - The model's default when none is asked, unless the request's
+    `max_tokens` is 1024 or less: that is asked as "none" (since 0.2.55,
+    plugins#643), since thinking would spend so small a budget on
+    reasoning alone.
   - The lowest level for "none", when the model can't turn thinking off.
 - It picks the context window (`context_length`) from the model's own
   windows (Qoder's Context setting: 200K, 400K, 1M): the default while the
@@ -144,7 +153,7 @@ itself.
   - an MD5 signature;
   - the machine id and the client's headers.
   - `Cosy-Version`: the worker runtime version that Qoder's desktop app
-    ships (1.1.69 in app 0.4.8, since 0.2.23, #281), because
+    ships (1.1.79-hotfix.18 in app 0.5.6, since 0.2.23, #281), because
     `Cosy-ClientType` says the desktop app.
 
 **Reading the reply**
@@ -153,6 +162,13 @@ itself.
   reasoning and usage.
 - Tool calls Qoder writes as XML or JSON in its text become tool calls.
   Tool calls it sends the OpenAI way keep Qoder's id.
+- A call sent the OpenAI way that never gets its function name is never
+  sent on, and its arguments go nowhere (since 0.2.51, #579). If nothing
+  of the answer came before it, the request is sent once more; a second
+  such reply is a 502 that magpie can retry or fail over. If the answer
+  had begun (text, reasoning or a named call), the unnamed call is dropped
+  and the answer ends as it would have without it (`tool_calls` beside a
+  named call, `stop` otherwise), with a warning in magpie's log.
 - A call written in the text that can't be read, or that the stream ends
   inside, is never sent on as the answer (since 0.2.16, #132): the turn
   ends as an error, a 502 or the stream's error frame with no finish, so
@@ -173,9 +189,11 @@ itself.
 |---|---|
 | A refused sign-in (no code, or code 105) | 401 |
 | A quota (codes 110, 112–119, 122) | 429 |
-| Busy or queued for the model (code 10605) | Since 0.2.28 the request waits in Qoder's queue as Qoder's client does (below), then is sent again; past the wait, 503 with `Retry-After` from Qoder's `retryAfterSeconds` (30s when it gives none). Since 0.2.40, when magpie has another candidate after this request (`x-magpie-fallback: 1`), the 503 comes at once, saying the queue and how many are ahead, and magpie asks the next. The sign-in is untouched |
+| A model the account's listing has off while its usage says no credits are left (since 0.2.64, #880) | 429 usage limit reached, with the credits used and the model; a model off with credits left, or whose usage can't be read, stays 400 `unknown or disabled model`, and an id Qoder never served is that 400 at once |
+| Busy or queued for the model (code 10605) | Since 0.2.28 the request waits in Qoder's queue as Qoder's client does (below), then is sent again; since 0.2.62 a streamed request is answered 200 at once and kept alive with SSE comments for up to an hour, its outcome in the stream; past the wait, 503 with `Retry-After` from Qoder's `retryAfterSeconds` (30s when it gives none). Since 0.2.40, when magpie has another candidate after this request (`x-magpie-fallback: 1`), the 503 comes at once, saying the queue and how many are ahead, and magpie asks the next. The sign-in is untouched |
 | A refusal of the request itself (codes 406, 416, 430, 80411, 80412, 100400–100403) | 400, with Qoder's words |
 | "Error in upstream response", the model's own vendor behind Qoder failing, which Qoder sends as a 400 (since 0.2.24) | 502, so magpie asks again or another account; the sign-in is untouched |
+| "Range of max_tokens should be [1, N]" behind "Error in upstream response" (since 0.2.63) | Asked again once with max_tokens N, which later requests for that model are sent from the start; refused again, 400 with Qoder's words, the sign-in untouched. QoDuck (`lmodel`) is never sent more than 131072, and a model whose listing entry names `max_output_tokens` never more than that; a smaller max_tokens goes as asked |
 | A failure before the answer starts | Qoder's status |
 | A failure after the answer has started | The stream ends with an error |
 
@@ -195,6 +213,18 @@ the configuration and name together. Model-list keys, API IDs,
 name remain independently selectable. The name describes the catalog
 entry used for the request, not an attestation of the backend that
 executed it.
+
+A request's `model_config` is built as Qoder's own client builds it
+(Qoder CN's CLI 1.1.81, desktop 0.4.3), not sent as the listing entry
+(since 0.2.54): `key`, `display_name`, an empty `model`, `format`,
+`is_vl`, `is_reasoning` (off when thinking is turned off), empty
+`api_key` and `url`, `source` and `max_input_tokens`. The entry's
+`minimal_version`, `strategies`, prices and `thinking_config` are not
+sent. While the whole entry was sent, Qoder CN billed DeepSeek-Flash
+(`dfmodel`, whose entry has a `minimal_version`) as Auto at Auto's rate
+(plugins#638); that the entry was the cause has not been confirmed on a
+Qoder CN account. A model whose entry has no key of its own, or whose key is
+`auto`, is refused with a 400 and nothing is sent, never served as Auto.
 
 The `provider.models` hook reads the account's own list, as Qoder's client
 asks for it (`/algo/api/v2/model/list`). It keeps the enabled models of the
@@ -302,6 +332,81 @@ paths, client id and protocol are the public ones:
 The hosts and reply shapes come from a real VPC account's report
 (yetone/magpie#312). This plugin has not been tried with a VPC account.
 
+### Enterprise dedicated domain (企业版专属域)
+
+An enterprise whose Qoder IDE signs in through 「企业版专属域登录」 with a
+domain of its own (any https host, such as `your-corp.rdc.aliyuncs.com`)
+signs in with **Sign in with Qoder CN Enterprise dedicated domain
+(企业版专属域)** (since 0.2.53). It asks for the domain as it is set in
+Qoder IDE's settings: a host or an https address (a path is dropped).
+
+It follows Qoder IDE 1.38.0's own rules for that setting:
+
+- It first asks `GET <domain>/algo/api/v1/version`. A 404 means a legacy
+  Lingma 1.0 (通义灵码) dedicated domain (see below). Any other answer means
+  Qoder CN 2.0. A domain that doesn't answer is refused.
+- A Qoder CN 2.0 domain uses the VPC protocol on hosts named the IDE's way:
+  `-openapi` or `-gateway` after the host's first label. An IP or a host
+  with no dot keeps its own origin. The sign-in uses the IDE's client id and
+  no `redirect_uri`.
+
+| | Dedicated domain `your-corp.rdc.aliyuncs.com` |
+|---|---|
+| Sign-in page | your-corp.rdc.aliyuncs.com/device/selectAccounts |
+| Accounts: poll, tokens, user info, usage | your-corp-openapi.rdc.aliyuncs.com |
+| Models and chat | your-corp-gateway.rdc.aliyuncs.com |
+
+- Models and chat use the gateway host when it answers at sign-in.
+  Otherwise they use the domain itself, which answered the probe on the
+  same `/algo` path. The IDE's language server makes this choice, and its
+  rule wasn't read, so this part is inferred.
+- The domain is kept with the account, which is named
+  `<email> (<domain>)`. An account whose kept domain isn't one is asked to
+  sign in again; it is never sent to the public hosts.
+
+The rules come from Qoder IDE's code. This plugin has not been tried with a
+dedicated account.
+
+#### Lingma 1.0 dedicated domains (since 0.2.56)
+
+A Lingma 1.0 domain has no device flow and takes no console PAT. Qoder CN
+IDE signs in to it through its own language server. So the plugin uses the
+account Qoder CN IDE is already signed in to on this computer:
+
+1. Sign in to the dedicated domain once in Qoder CN IDE (Settings →
+   「企业版专属域登录」).
+2. In magpie, choose **Sign in with Qoder CN Enterprise dedicated domain
+   (企业版专属域)** and enter the same domain.
+
+The plugin reads the IDE worker's cache, in its `SharedClientCache` folder:
+
+| System | Folder |
+|---|---|
+| macOS | `~/Library/Application Support/QoderCN/SharedClientCache` |
+| Windows | `%APPDATA%\QoderCN\SharedClientCache` |
+| Linux | `$XDG_CONFIG_HOME/QoderCN/SharedClientCache` (`~/.config/...`) |
+
+It also looks in `~/.config/Qoder CN/SharedClientCache` and `~/.lingma`, and
+`QODERCN_COSY_HOME` names another folder. `cache/id` is the machine id, and
+`cache/user` is the account, encrypted under that id.
+
+- Every call goes to the domain itself, signed as the IDE's worker signs
+  it: `Cosy-ClientType` 0, version 2.5.18, the assistant scene.
+- The models are the IDE's own: `qmodel_latest` (Qwen3.7-Max),
+  `dashscope_qmodel` (Qwen3.7-Plus) and `q36fmodel` (Qwen3.6-Flash). The
+  domain's own model list names keys its chat refuses. When the domain
+  answers "Model not exist" for a model, the next one is asked.
+- The IDE renews its sign-in itself, and the plugin reads the cache again
+  near the token's end, or when the domain refuses it (105). When the IDE
+  holds nothing newer, the account is marked expired: open Qoder CN IDE so
+  it signs in again.
+- Usage and the daily check-in are not read on such a domain.
+
+The cache layout, the request shape and the models come from Milktea's
+tests on a real Lingma dedicated domain. The folders and the model names
+were checked against Qoder CN IDE 1.38.0. This plugin itself has not been
+tried on one.
+
 ## The card's name
 
 An account signed in with a phone is shown by that phone — masked, `138****8000` — not by
@@ -380,7 +485,8 @@ the account's credentials.
   (`Qoder.app` on macOS, `%LOCALAPPDATA%\Programs\Qoder` or, since
   0.2.26, `%ProgramFiles%\Qoder` on Windows, `/opt/Qoder` on Linux) or the runtime the CLI caches in `~/.qoder/.bin`
   (`runtime-info-<platform>-<arch>-*` on macOS and Linux,
-  `umid-win32-x64-*\runtime-info.exe` on Windows; `QODER_CONFIG_DIR`,
+  `umid-win32-x64-*\runtime-info.exe` or, as qodercli 1.21.2 caches it
+  since 0.2.64, `runtime-info-win32-x64-*.exe` on Windows; `QODER_CONFIG_DIR`,
   `QODER_CLI_HOME` and `QODER_CONFIG_DIR_NAME` move it as they move the
   CLI's folder).
 - For another installation location, set `QODER_RUNTIME_INFO` to the
@@ -474,11 +580,23 @@ Since **0.2.28** a queued request waits its turn as Qoder's own client
 model and the plan's `queueType`, at once and then every
 `retryAfterSeconds` (held to 0.5–30s, 30s when unsaid), and once
 `isQueued` is false it waits that state's `retryAfterSeconds` and sends the
-same request again (up to 10 times). Qoder's client waits up to an hour;
-the plugin waits at most 4 minutes from the request's start, since nothing
-reaches the agent meanwhile (magpie keeps a stream alive with comments for
-5 minutes of silence). Three failed status asks in a row, a 404, or a
-cancelled request end the wait early. Qoder's client also reports the end
+same request again (up to 10 times). Three failed status asks in a row, a
+404, or a cancelled request end the wait early.
+
+Since **0.2.62** a streamed request (every agent's) waits as long as
+Qoder's client does, up to an hour from the request's start, where it
+waited at most 4 minutes and then was a 503 that Codex retried, a stop and
+a restart for the user (plugins#807). It is answered 200 at once, with an
+SSE comment saying the queue (": Qoder queued the request for smodel
+(this plan's queue: p3, 284 ahead); try again in 30s") and a comment every
+10 seconds while it waits. magpie counts each comment as the reply going
+on: a Codex client is told `response.in_progress`, the event its 300s idle
+timeout counts, and a Chat client gets the comment. What comes of the wait
+goes on in the same stream: the answer, or a refusal (the queue's own after
+the hour) as the stream's error. Nothing needs setting. A request that isn't
+streamed has nothing to keep its client alive with, so it still waits 4
+minutes at most before the 503. Claude Code takes a ping as life only 30
+times in a row, about 35 minutes, so a longer wait still ends there. Qoder's client also reports the end
 of its turn to `/api/v2/service/ask/finish`; the plugin doesn't, and
 Qoder releases that lease on its own TTL. `queue.test.mjs` has the wait.
 

@@ -9,12 +9,12 @@ entrypoint; no additional port or domain is opened.
 ## Pinned reference implementations and attribution
 
 Source: [magpie-community/plugins](https://github.com/magpie-community/plugins)
-at commit `2e580cfead8c5fe10add40d749a29a07803f745d`.
+at commit `d51e9e3cadbcd665d9bc1703809c88ec06d6cbe3`.
 
 | Bundled source | Upstream package | Bundled version | License |
 | --- | --- | --- | --- |
-| `magpie-plugins/zcode/` | `@magpie-community/opencode-zcode-auth` | 0.1.39 | MIT |
-| `magpie-plugins/qoder/` | `@magpie-community/opencode-qoder-auth` | 0.2.50 | MIT, includes MIT notice `LICENSE-CLIProxyAPI` |
+| `magpie-plugins/zcode/` | `@magpie-community/opencode-zcode-auth` | 0.1.57 | MIT |
+| `magpie-plugins/qoder/` | `@magpie-community/opencode-qoder-auth` | 0.2.64 | MIT, includes MIT notice `LICENSE-CLIProxyAPI` |
 | `magpie-plugins/codearts/` | `@magpie-community/opencode-codearts-auth` | 0.2.6 | MIT, see bundled `LICENSE` |
 
 Vendored packages are verbatim. Their copyrights and authorship remain with

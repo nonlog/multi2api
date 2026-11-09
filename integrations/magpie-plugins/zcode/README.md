@@ -31,14 +31,24 @@ over Anthropic's Messages API. Provider id: `zcode`.
     picks by it, so without it the cache is mostly missed (#387). An
     account known only by its key gets a device id made from the key, the
     same on every start. Every request also carries the `x-session-id`
-    header below. zcode.z.ai also
+    header below. ZCode's headers are the desktop app's (3.17.2):
+    `X-Title: Z Code@electron`, and an `x-query-id` per user turn, a UUID
+    that stays the same through the turn's tool results and is new with
+    the next user message, as ZCode makes one per query. zcode.z.ai also
     answers 405 code 3012 to every request of an account its risk control
     blocked, ZCode's own app's included (plugins#348). That answer comes
     back as ZCode's words, then "ZCode's risk control blocked this account
     for unusual activity (code 3012); …", which magpie reads as the account
     restricted: it rests, and the group's other providers are used. Only
     ZCode support lifts such a block. A block page from ZCode's edge
-    firewall says this network's address was blocked instead.
+    firewall says this network's address was blocked instead. Since 0.1.43
+    (plugins#649) such a page also holds zcode.z.ai off for three minutes,
+    for every account of the plugin, since they share the address: the
+    Start Plan and a picked `-Trial` entry are answered at once with the
+    same 405 and words, so magpie still uses the group's other providers,
+    and free first keeps a dual account on its coding plan. The first
+    request after the three minutes asks again. A GLM Coding Plan key, on
+    api.z.ai, is never held.
   - The Start Plan's token can't be refreshed. When it runs out, sign in
     again.
   - Every request, on any plan, names its conversation in `x-session-id`,
@@ -130,20 +140,25 @@ becomes a 429 and keeps the entry off for a minute. Any other gift
 answer (its 405, its 401, its 5xx) goes on as it came: the user picked
 the gift, so the coding plan is not spent behind their back. Every other
 429 counts as spent — Z.ai's 1302/1303 rate limits among them — while the
-plan's own in-flight cap (3008/3009) does not: such a request is asked
+plan's own in-flight cap (3008/3009/3010) does not: such a request is asked
 again instead (see [A few at once](#a-few-at-once)). A stream's body is
 never read or buffered on the way.
 
 **Free first.** Picking `-Trial` by hand keeps the choice the user's,
 but an agent that always asks the plain model never sees the gift.
-`freeFirst` turns the preference around: the plain model spends the
-account's own live gift first, and falls back to the coding plan when
-the gift cannot serve it — a bucket that is spent, a model the gift
-does not serve, no ZCode session, or the minute's rest a refusal just
-earned. Turn it on for the whole plugin in magpie's Plugins › Options
+`freeFirst`, on by default since 0.1.42, turns the preference around:
+the plain model spends the account's own live gift first, and falls
+back to the coding plan when the gift cannot serve it — a bucket that
+is spent, a model the gift does not serve, no ZCode session, or the
+minute's rest a refusal just earned. In magpie, the switch is in the
+provider's editor: Providers › ZCode, **Free quota first** under Plugin
+options, just above Advanced (since 0.1.49). It is on by default; off
+keeps the plain models on the plan. The JSON below still works, and a
+`freeFirst: false` there keeps it off whatever the switch says. Turn it
+off for the whole plugin in magpie's Plugins › Options
 
 ```json
-{ "freeFirst": true }
+{ "freeFirst": false }
 ```
 
 or on the provider alone, under `provider.zcode.options` in the config
@@ -164,7 +179,12 @@ from the plan in the same request — any gift failure is, its own
 waited-out busy cap included, and the replay waits out the plan's busy
 cap as any plan request does — and a spent answer or a block page rests
 the model a minute and drops the route's balance read, so the requests
-behind it go straight to the plan. A gift that cannot be asked at all —
+behind it go straight to the plan. Only a spent answer holds the
+model's `-Trial` entry too; a refusal for another reason (a 405/3012)
+keeps free first off the gift for the minute but leaves the `-Trial`
+entry asking ZCode, which answers it as it came. Before 0.1.49 the two
+rests were one, and a refused free-first request made the next `-Trial`
+request answer a local "quota exhausted" 429 without asking. A gift that cannot be asked at all —
 the network, the host — is answered from the plan the same way, the
 route read dropped for the next request, while a caller's own abort
 stays an abort. The agent sees the plan's answer
@@ -175,26 +195,74 @@ a spent one answers 429 with freeFirst on, as it does without it.
 ## A few at once
 
 A plan serves one account a few requests at a time; past that, ZCode
-answers 429 with code 3008 "user concurrency limit exceeded", or 3009
-"model concurrency limit exceeded". magpie funnels every agent's and every
-session's requests of one computer through this one plugin process, so
-magpie's own queue spaces an account's requests by the number this plugin
-declares — `maxConcurrency` on the auth hook, and `magpie.maxConcurrency`
-in its `package.json`, both three. A request the vendor refuses anyway
-waits a moment (a quarter of a second, then longer — about ten seconds of
-waits in all) and asks again, the same request byte for byte. A cap that
-outlasts the waits goes on as a 429, ZCode's words followed by what they
+answers 429 with code 3008 "user concurrency limit exceeded", 3009
+"model concurrency limit exceeded" or 3010. magpie funnels every agent's
+and every session's requests of one computer through this one plugin
+process, so magpie's own queue spaces an account's requests by the number
+this plugin declares — `maxConcurrency` on the auth hook, and
+`magpie.maxConcurrency` in its `package.json`, both three. A request the
+vendor refuses anyway is asked again after 1s and once more after 2s, the
+same request byte for byte, as ZCode's own client (3.17.2) does. A cap
+that outlasts both goes on as a 429, ZCode's words followed by what they
 mean, so the agent reads why. magpie still reads it as a rate limit: the
 account rests a minute and the request goes to the next member of its
-routing group, as it did before.
+routing group.
 
-Three is a default, not a cap the plugin enforces. A plan's real cap
-follows its tier — Z.ai serves a Max plan more at once than a Pro, and a
-Lite fewer — and is higher off-peak
+For a coding plan three is a default, not a cap the plugin enforces. A
+plan's real cap follows its tier — Z.ai serves a Max plan more at once
+than a Pro, and a Lite fewer — and is higher off-peak
 ([Z.ai's usage policy](https://docs.z.ai/devpack/usage-policy)), so a
 number written into the plugin would hold a Max account to a Lite one's
 with no way to raise it. A user who knows their plan's cap sets it on the
 account or the provider in magpie, and magpie's queue follows that.
+
+The free Start Plan is one tier, measured at about three in flight
+(plugins#395), so there the plugin keeps its own gate too: an account's
+fourth Start Plan request waits in the plugin, in arrival order, until
+one of the three has been read to its end (or its agent went away), and
+is not sent to be refused. That covers what magpie's queue cannot see —
+a `maxConcurrency` raised past three, two magpie providers on one ZCode
+account, an older host. A request that has waited two minutes is answered
+here with a 429 that says it was not sent and why. Free first skips the
+gift while its account's gate is full, so the plain model goes to the
+coding plan rather than queueing.
+
+A run of caps is also the edge firewall's countdown: two days of logs
+(11-05 and 11-06) show ~18 requests/min on the Start Plan, up to ten in
+flight on one account, bringing 3008 caps in a run, then 3–7 minutes
+later a 405 block page that refuses the whole IP for 1–2 hours. Up to
+0.1.55 the plugin itself added to that run: it sent every request magpie
+passed it, asked a capped one again up to six times over about ten
+seconds, and counted every capped request toward the hold, so busy agents
+tripped the hold on refusals it had caused. With the gate the plugin's
+own requests stay under the cap, and a request counts only when ZCode
+refuses it again at the 1s re-ask, the sign that someone else (the ZCode
+app, another computer on the account) holds the slots. Five such
+requests in one minute hold Start Plan requests off `zcode.z.ai` for
+three minutes, process-wide and for every account, and answer them here
+with a 429 and `Retry-After` that say what happened and what to do, so
+magpie still rests the account and asks the group's next provider. A
+coding plan, served by another host, is never held. The window clears
+when the hold is armed, so the hold's own 429s cannot keep it armed, and
+a request already in flight or queued stops asking too. This is distinct
+from the network's 405 block page hold (plugins#649), which is what an IP
+already refused needs; when both are on, the 405 hold's answer wins.
+`inflight.test.mjs` replays the two days at 20× speed against a fake that
+refuses past three in flight: 0.1.55 drew 24 refusals in it, this version
+none.
+
+## Two accounts at once
+
+Three ZCode accounts used at once from one address can get the address
+refused with a 405, where two are served (01huadalang on Discord). So the
+plugin declares `maxAccounts` two, on the auth hook and as
+`magpie.maxAccounts` in its `package.json`: magpie sends requests to the
+first two accounts of the user's list only, and holds the others in
+reserve. One that runs out or fails rests, and the first in reserve takes
+its place until it is back. A user changes the number on the provider in
+magpie (Advanced → Accounts at once, or `magpie provider at-once zcode
+<n>`), 0 for every account at once. A magpie older than the one that
+reads it uses every account, as before.
 
 ## The usage card
 
@@ -218,7 +286,8 @@ names it in a line set aside, "ZCode gift plan not started yet", with
 the plan's name and its start in this computer's time as the display
 ("Start Plan · 2026-10-29 23:00"), soonest first. An account whose only
 gift plan starts later gets a card with that line, not "ended or never
-started". The status ZCode gives such a plan has not been seen, so any
+started", and signs in with it too, as ZCode counts such a plan as the
+account's (its "pending" Start Plan). The status ZCode gives such a plan has not been seen, so any
 status but `expired` is taken; `starts_at` decides it.
 
 **Resets.** A GLM Coding Plan of the account's own, and a team seat,
@@ -252,26 +321,72 @@ the next read shows it as an ordinary gift bucket.
 With ZCode turned on in magpie's Settings → Daily check-in (it is off
 until you turn it on), magpie has the plugin claim each account's gift
 plans once a day (`auth.checkin`; `magpie accounts checkin` asks now). It
-reads both lists above (the banners' feed and the preview, each plan
-once) and posts each plan to
+reads the banner feed above — the v3.17 client replaced the old preview
+polling with the feed alone, and the feed is gated on the client's
+version, so the plugin asks as the current client (3.17.2) sends — and
+posts each plan the feed offers to
 `POST /api/v1/zcode-plan/billing/claim` (`{"plan_id": …}`) with the
-account's ZCode session, as the app does. The answer is judged by the
-body's code, not the HTTP status:
+account's ZCode session, as the app does. An answer of nothing to claim
+carries an `until` half an hour out, so magpie's loop asks again then,
+and again, all day while the feed names no plan — one GET, nothing
+posted: ZCode drops plans into the feed on its own schedule (a weekend
+banner starting at 19:00 Beijing, say), and one that arrives
+after the day's ask used to sit unclaimed past its short life. The
+other answers stand for the day — but an *ineligible* (code 1004, below)
+is read again in half an hour, as an inactive is: a claimed plan leaves
+the feed, so
+asking again half an hour later would find nothing and flip the card
+from "Checked in today" to "No check-in event now"; a captcha plan
+re-asked makes ZCode demand its captcha again; a done plan re-asked
+posts a claim ZCode already answered. So a second plan the same day,
+after one was claimed, is seen the next day. The answer is judged by
+the body's code, not the HTTP status:
 
 - nothing listed: *inactive* (ZCode answers an account with nothing to
-  claim `{"code":0,"msg":""}`, with no list at all). A list that doesn't
-  read is *failed*, never nothing to claim. A plan just claimed may show
-  in neither `billing/preview` nor `billing/current` until its
-  `effective_at`, so neither list is read as "claimed or not";
+  claim `{"code":0,"msg":""}`, with no list at all). A feed that doesn't
+  read is *failed*, never nothing to claim;
 - code 0: *claimed* (the next request uses the plan);
 - code 1003 "target already exists" (HTTP 200): *done*, claimed before;
+- ZCode's own client config (`GET /api/v1/client/configs`, read at most
+  every ten minutes) says whether a claim needs its security check
+  (`captcha.enabled`). While it does, which is so since 11-07, nothing is
+  posted: every plan answers *captcha*, "claim it in the ZCode app", since
+  a claim without the app's proof only spends one of ZCode's refusals. A
+  config that doesn't read answers *failed*, and nothing is posted then
+  either;
 - code 3007 "captcha verify failed": *captcha*, the plan is claimed in
-  the ZCode app (on 10-06 ZCode wanted the app's Aliyun captcha for a
-  claim; whether it still does for a fresh plan is not known yet);
+  the ZCode app — the claim is gated on the Aliyun captcha the app's
+  renderer answers, and a claim from outside the app is refused it
+  (11-03: seven accounts' ZCODE GLOBAL BUILD all answered 3007). Once
+  claimed there, the gift lands on the account and freeFirst spends it
+  like any other;
+- code 1004 "…not eligible for this plan yet" (HTTP 400): *ineligible*,
+  ZCode is not offering this account the plan at that moment. It is read
+  again half an hour out, since a plan can be offered later in the day
+  (11-04: an account's GLOBAL BUILD banner appeared 28 minutes after it
+  signed in). When *every* account answers 1004, check `APP_VERSION`
+  first: six accounts all answered 1004 under 3.16.3's header, and four
+  of them claimed with code 0 under 3.17.2's, one night, with nothing
+  else changed;
+- HTTP 429 "Too Many Requests", or a body code 3002 "请求过于频繁": *failed*,
+  and the account is then **held in the plugin**: until the wait is over, a
+  check-in answers that same failed (`until` and all) and asks ZCode nothing.
+  magpie asks a failed again after 30 minutes of its own whatever `until`
+  says, so the hold has to live here (magpie from v0.1.3165 honors a failed's
+  `until` itself; older versions lean on this hold). A `Retry-After` ZCode
+  sent is honored up to six hours; without one the account's own wait doubles
+  from half an hour, and a read that comes through forgets it. The hold
+  belongs to one account and lives in memory — a magpie restart forgets it.
+  (11-04, #503: one owner read 180 of them over four days at magpie's
+  30-minute retry, across several accounts.);
 - anything else, an HTTP error without a code, or a reply that isn't
   JSON: *failed*, which magpie asks again later that day. It is never
   taken as claimed, and a failed claim leaves the account's sign-in
   alone.
+
+The rewards center in the client (奖励中心, the embedded
+`zcode.z.ai/{cn|en}/rewards` page) is the referral program's website,
+separate from these gift plans; its rewards are claimed on that page.
 
 An account added with a GLM Coding Plan key has no ZCode session to claim
 with (*ineligible*).
@@ -300,9 +415,13 @@ plans add `-Trial` entries, which are told as read):
 | GLM-5-Turbo | 200K | 64K | none, high |
 
 The Start Plan's config has all of these except GLM-5.3. An account
-with no GLM Coding Plan also lists every model its gift plans serve under
-the model's own name, as ZCode does (the Start Plan's GLM-5.3 bucket makes
-GLM-5.3 a model), since all of its requests go to the gift anyway.
+with no GLM Coding Plan lists the models its gift plans' balance names,
+under each model's own name, as ZCode does (the Start Plan's GLM-5.3
+bucket makes GLM-5.3 a model), since all of its requests go to the gift
+anyway. A config model the balance doesn't name is left out: an account
+whose Start Plan holds only GLM-5.3-Flash lists GLM-5.3-Flash (and its
+-Trial entry), not GLM-5.2 or GLM-5-Turbo. Only a balance that names no
+model leaves the config's list standing.
 
 A gift plan's models appear again as `<model>-Trial` entries, so a
 request can spend the gift's quota on purpose. A trial entry is listed
