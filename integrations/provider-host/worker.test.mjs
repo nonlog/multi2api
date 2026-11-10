@@ -46,6 +46,17 @@ test("all real bundled plugins initialize behind the same private Unix socket", 
     expect(qoderTimeout.code).toBe("device_timeout")
     const qoderStorage = mod.loginFailure("Qoder 国际版", new Error("EACCES: write /private/secret-file"))
     expect(qoderStorage.code).toBe("save_failed")
+    // A plugin's sign-in answers { type: "success", access, … }; the record
+    // stored is an oauth credential, and its access is still required.
+    const signedIn = mod.loginRecord({ type: "success", access: "dv-1", refresh: "rt-1", uid: "user-1" })
+    expect(signedIn.type).toBe("oauth")
+    expect(signedIn.access).toBe("dv-1")
+    expect(signedIn.refresh).toBe("rt-1")
+    expect(signedIn.uid).toBe("user-1")
+    expect(() => mod.loginRecord({ type: "success" })).toThrow(/usable access token/)
+    expect(() => mod.loginRecord({ type: "success", access: "   " })).toThrow(/usable access token/)
+    expect(() => mod.loginRecord({ type: "error", error: "denied by the owner" })).toThrow(/denied by the owner/)
+    expect(() => mod.loginRecord(undefined)).toThrow(/vendor rejected sign-in/)
     const result = await fetch("http://localhost/health", { unix: socket })
     expect(result.status).toBe(200)
     const info = await result.json()

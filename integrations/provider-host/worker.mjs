@@ -152,6 +152,20 @@ function validCredential(value) {
     (value.type === "oauth" || value.type === "api" || value.type === undefined)
 }
 
+// A plugin's sign-in answers its own envelope — { type: "success", access,
+// refresh, expires, … } — while what is stored is an oauth credential. The
+// credential check therefore runs on that record, not on the envelope: the
+// envelope's type is "success", which is no credential type, so validating it
+// rejected every browser sign-in (Qoder, Qoder CN, ZCode, CodeArts alike) as
+// "no usable access token". A missing or blank access is still refused here.
+export function loginRecord(result) {
+  if (result?.type !== "success")
+    throw new Error(String(result?.error || "vendor rejected sign-in").slice(0, 200))
+  const record = { ...result, type: "oauth" }
+  if (!validCredential(record)) throw new Error("vendor did not return a usable access token")
+  return record
+}
+
 async function forgetCheckin(key) {
   maintenanceWriting = maintenanceWriting.catch(() => {}).then(async () => {
     delete maintenance.checkins[key]
@@ -266,10 +280,8 @@ async function adminLoginStart(req) {
     try {
       const result = await flow.callback()
       if (browserLogins.get(state) !== entry) return
-      if (result?.type !== "success") throw new Error(String(result?.error || "vendor rejected sign-in").slice(0, 200))
-      if (!validCredential(result)) throw new Error("vendor did not return a usable access token")
+      const record = loginRecord(result)
       entry.phase = "saving"
-      const record = { ...result, type: "oauth" }
       const key = saveAccountKey(id, record)
       await saveAuth(key, record, { enable: true })
       await forgetCheckin(key)
