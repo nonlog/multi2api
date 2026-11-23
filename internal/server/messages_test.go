@@ -287,6 +287,25 @@ func TestMessagesStreamEventOrder(t *testing.T) {
 	}
 }
 
+func TestMessagesStreamCompactSSE(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rw := &messagesWriter{ResponseWriter: rec, stream: true}
+	rw.Header().Set("Content-Type", "text/event-stream")
+	for _, chunk := range []string{
+		`data:{"choices":[{"index":0,"delta":{"content":"OK"}}]}` + "\n\n",
+		`data:{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+		"data:[DO", "NE]\n\n",
+	} {
+		if _, err := rw.Write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"text":"OK"`) || !strings.Contains(body, `"stop_reason":"end_turn"`) || !strings.Contains(body, "event: message_stop\n") {
+		t.Fatalf("incomplete Anthropic stream: %s", body)
+	}
+}
+
 func TestMessagesEndpoint(t *testing.T) {
 	for _, path := range []string{"/v1/messages", "/messages"} {
 		up := newFakeUpstream(t, func(string) (int, string, bool) { return 200, sseOK, true })

@@ -758,12 +758,13 @@ func (w *messagesWriter) handleFrame(frame string) error {
 	if w.x.failed || w.x.done {
 		return nil
 	}
-	if strings.HasPrefix(frame, "data: [DONE]") {
-		return w.closeAndStop()
-	}
-	payload, ok := strings.CutPrefix(frame, "data: ")
+	payload, ok := strings.CutPrefix(frame, "data:")
 	if !ok {
 		return nil
+	}
+	payload = strings.TrimSpace(payload)
+	if payload == "[DONE]" {
+		return w.closeAndStop()
 	}
 	var obj map[string]any
 	if json.Unmarshal([]byte(payload), &obj) != nil {
