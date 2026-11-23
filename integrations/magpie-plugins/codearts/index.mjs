@@ -1829,6 +1829,12 @@ async function signedFetch(cred, input, init, context) {
         body = utf8(JSON.stringify(chat.body))
         continue
       }
+      // Backport Magpie CodeArts #905: this account has no free channel for the model.
+      if (extra && /InferHub\.APIG\.0101\.404/i.test(code || text)) {
+        context.state?.noBenefit.add(model)
+        extra = undefined
+        continue
+      }
       if (extra && /InferHub\.400[45]\.200|benefit not found/i.test(code || text)) {
         // A new Beijing day whose benefit isn't claimed yet: claim it, as the
         // agent does each day, and send it again as the free model.
