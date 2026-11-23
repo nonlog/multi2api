@@ -123,10 +123,11 @@ const ServiceName = "workbuddy2api"
 
 // Handler 主路由。
 type Handler struct {
-	cfg       Config
-	mux       *http.ServeMux
-	degrade   degradeGate
-	codexRefs codexSearchIndex
+	cfg             Config
+	mux             *http.ServeMux
+	degrade         degradeGate
+	codexRefs       codexSearchIndex
+	autoRouteCursor sync.Map // unified model -> *atomic.Uint64
 	// wafIP WAF IP 级拦截状态机（fail-fast，wafip.go）：短窗多号 WAF 403 →
 	// 激活期轮转遇 WAF 403 直接终止（不放大请求量）。进程内状态、重启清零。
 	wafIP wafIPGate
@@ -623,23 +624,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
 		return
 	}
-	var peek struct {
-		Stream bool   `json:"stream"`
-		Model  string `json:"model"`
-	}
+	var peek chatRequestHeader
 	_ = json.Unmarshal(body, &peek)
 	selected := peek.Model
-	// Explicit operator overrides win. Auto-unification otherwise keeps the
-	// WorkBuddy CN/Global account pool and uses exact vendor identity only
-	// when neither WorkBuddy realm has an eligible account.
 	if target := h.cfg.ProviderAliases[selected]; target != "" {
 		selected = target
-	} else if slices.Contains(h.cfg.AutoUnifyModels, selected) && h.cfg.ProviderHost != nil &&
-		len(h.cfg.Pool.AvailableUIDsForModelRealm(selected, "cn")) == 0 &&
-		(!h.cfg.GlobalEnabled || len(h.cfg.Pool.AvailableUIDsForModelRealm(selected, "global")) == 0) {
-		if alternative := selectAutoVendor(selected, h.cfg.ProviderHost.Models(r.Context())); alternative != "" {
-			selected = alternative
-		}
 	}
 	if provider, bare, ok := providerhost.ModelProvider(selected); ok {
 		if h.cfg.ProviderHost == nil {
@@ -647,10 +636,40 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				"integrated provider is not enabled: "+provider)
 			return
 		}
-		h.cfg.ProviderHost.ProxyChat(w, r, body, provider, bare)
+		h.cfg.ProviderHost.ProxyChat(w, r, body, provider, bare, nil)
 		return
 	}
 
+	realm, bareModel := ResolveMappedModel(peek.Model, h.cfg.ModelAliases)
+	if slices.Contains(h.cfg.AutoUnifyModels, peek.Model) {
+		// Explicit WorkBuddy mappings still determine which realms that pool can use.
+		mapped := len(h.cfg.ModelAliases[peek.Model]) != 0
+		cn := realm != "global" && len(h.cfg.Pool.AvailableUIDsForModelRealm(bareModel, "cn")) > 0
+		global := (!mapped || realm != "cn") && h.cfg.GlobalEnabled && len(h.cfg.Pool.AvailableUIDsForModelRealm(bareModel, "global")) > 0
+		if !mapped {
+			switch {
+			case cn && global:
+				realm = ""
+			case global:
+				realm = "global"
+			}
+		}
+		if h.cfg.ProviderHost != nil {
+			h.routeAutoChat(w, r, body, peek.Model, h.cfg.ProviderHost, cn || global, func(fallback func()) {
+				h.chatWorkBuddy(w, r, body, peek, realm, bareModel, clientIP, fallback)
+			})
+			return
+		}
+	}
+	h.chatWorkBuddy(w, r, body, peek, realm, bareModel, clientIP, nil)
+}
+
+type chatRequestHeader struct {
+	Stream bool   `json:"stream"`
+	Model  string `json:"model"`
+}
+
+func (h *Handler) chatWorkBuddy(w http.ResponseWriter, r *http.Request, body []byte, peek chatRequestHeader, realm, bareModel, clientIP string, fallback func()) {
 	// 工具名名单：上游在没有 tools 的请求里会把工具调用吐成原生标记文本
 	// （见 upstream/dsml.go），修复层用它做严格判定。名单来自「本请求声明的 tools」
 	// 与「会话历史里出现过的工具名」两个来源——实测 tools 声明会在中转环节丢失，
@@ -658,19 +677,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 在提示词/模型名改写之前取（那些改写不动 tools / messages[].tool_calls 子树）。
 	declaredTools := allowlistedResponseTools(r.Context(), body)
 
-	// realm 前缀解析（D6）：model 名可能带 "[realm:]" 前缀。剥出 realm + bareModel，
-	// bareModel 用于选号/粘性/出站 body 重写（前缀是网关侧路由协议，上游只认裸名）。
-	// 裸名 → ("cn", 原串)，CN 现状零回归。
-	aliases := h.cfg.ModelAliases
-	if slices.Contains(h.cfg.AutoUnifyModels, peek.Model) && h.cfg.ProviderAliases[peek.Model] == "" {
-		aliases = make(map[string][]string, len(h.cfg.ModelAliases)+1)
-		for k, v := range h.cfg.ModelAliases { aliases[k] = v }
-		if len(aliases[peek.Model]) == 0 {
-			if len(h.cfg.Pool.AvailableUIDsForModelRealm(peek.Model,"cn")) > 0 { aliases[peek.Model] = append(aliases[peek.Model], "cn:"+peek.Model) }
-			if h.cfg.GlobalEnabled && len(h.cfg.Pool.AvailableUIDsForModelRealm(peek.Model,"global")) > 0 { aliases[peek.Model] = append(aliases[peek.Model], "global:"+peek.Model) }
-		}
-	}
-	realm, bareModel := ResolveMappedModel(peek.Model, aliases)
 	modelRate := ""
 	if h.cfg.Upstream != nil {
 		modelRate = h.cfg.Upstream.ModelRate(realm, bareModel)
@@ -1354,9 +1360,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		status = http.StatusBadRequest
 	}
-	writeOpenAIErrorHint(w, status, code, msg, hint)
 	st.status = status
 	st.outcome = reqlog.OutcomeHTTPError
+	if fallback != nil && r.Context().Err() == nil && (ue == nil || ue.Kind != upstream.ErrClient && ue.Kind != upstream.ErrWafBlock) {
+		releaseHeld()
+		log.Printf("WARN: [server] auto route model=%s source=workbuddy unavailable (%s), trying another provider", peek.Model, code)
+		fallback()
+		return
+	}
+	writeOpenAIErrorHint(w, status, code, msg, hint)
 }
 
 // tokensPerSecond 计算吐字速率（token/s），返回 (速率, 是否有意义)。

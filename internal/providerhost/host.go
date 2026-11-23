@@ -296,7 +296,8 @@ func (h *Host) Checkin(ctx context.Context, provider, account string, force bool
 	return data, nil
 }
 
-func (h *Host) ProxyChat(w http.ResponseWriter, r *http.Request, body []byte, provider, bare string) {
+// ProxyChat calls fallback only for availability failures, before committing headers.
+func (h *Host) ProxyChat(w http.ResponseWriter, r *http.Request, body []byte, provider, bare string, fallback func()) {
 	if h == nil || !Recognizes(provider) {
 		http.Error(w, "provider runtime not configured", http.StatusServiceUnavailable)
 		return
@@ -325,8 +326,21 @@ func (h *Host) ProxyChat(w http.ResponseWriter, r *http.Request, body []byte, pr
 	}
 	resp, err := h.client.Do(req)
 	if err != nil {
+		if fallback != nil && r.Context().Err() == nil {
+			fallback()
+			return
+		}
 		http.Error(w, "embedded provider runtime unreachable", http.StatusBadGateway)
 		return
+	}
+	if fallback != nil && r.Context().Err() == nil {
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusTooManyRequests,
+			http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			_ = resp.Body.Close()
+			fallback()
+			return
+		}
 	}
 	defer resp.Body.Close()
 	ct := resp.Header.Get("Content-Type")

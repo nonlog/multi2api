@@ -1046,7 +1046,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       <div class="box" id="modelAliasBox">
         <header><h3>模型映射 <span class="hint">直接配置对外模型 ID → 实际上游模型</span></h3><span class="grow"></span><button class="xs" id="btnAliasReload">刷新映射</button></header>
         <div class="pad auto-mapping">
-          <div class="auto-map-intro"><div><strong>自动统一同名模型</strong><p>只归并真实同名的上游模型，优先使用 WorkBuddy 账号池；不可用时使用已接入的同名 Provider。</p></div>
+          <div class="auto-map-intro"><div><strong>自动统一同名模型</strong><p>只归并目录中同名的模型。在可用的 WorkBuddy 账号池与已接入的同名 Provider 之间轮询，响应写出前可在上游不可用时切换。</p></div>
           <button type="button" class="primary" id="btnAutoUnifySave">应用自动映射</button></div>
           <div class="auto-map-choices" id="autoUnifyChoices" role="group" aria-label="需要自动统一的模型">
             <label class="auto-map-choice"><input type="checkbox" value="deepseek-v4.1-flash" checked><span><strong>deepseek-v4.1-flash</strong><small>正在发现对应上游…</small></span></label>
