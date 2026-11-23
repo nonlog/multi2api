@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"slices"
 	"strings"
@@ -154,7 +155,12 @@ func (h *Handler) routeAutoChat(w http.ResponseWriter, r *http.Request, body []b
 		route := routes[(start+uint64(i))%uint64(len(routes))]
 		var fallback func()
 		if i+1 < len(routes) {
-			fallback = func() { attempt(i + 1) }
+			fallback = func() {
+				if route != "" {
+					log.Printf("WARN: [server] auto route model=%s source=%s unavailable, trying another provider", model, route)
+				}
+				attempt(i + 1)
+			}
 		}
 		if route == "" {
 			workBuddy(fallback)

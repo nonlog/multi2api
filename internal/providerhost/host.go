@@ -333,16 +333,33 @@ func (h *Host) ProxyChat(w http.ResponseWriter, r *http.Request, body []byte, pr
 		http.Error(w, "embedded provider runtime unreachable", http.StatusBadGateway)
 		return
 	}
+	defer resp.Body.Close()
+	var responseBody io.Reader = resp.Body
 	if fallback != nil && r.Context().Err() == nil {
+		retry := false
 		switch resp.StatusCode {
 		case http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusTooManyRequests,
 			http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			retry = true
+		case http.StatusBadRequest, http.StatusNotFound:
+			if provider == "codearts" {
+				// CodeArts can advertise a model whose inference API is unpublished.
+				prefix, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
+				responseBody = io.MultiReader(bytes.NewReader(prefix), resp.Body)
+				var reply struct {
+					Error struct {
+						Code string `json:"code"`
+					} `json:"error"`
+				}
+				retry = readErr == nil && json.Unmarshal(prefix, &reply) == nil && reply.Error.Code == "InferHub.APIG.0101.404"
+			}
+		}
+		if retry && r.Context().Err() == nil {
 			_ = resp.Body.Close()
 			fallback()
 			return
 		}
 	}
-	defer resp.Body.Close()
 	ct := resp.Header.Get("Content-Type")
 	if ct == "" {
 		ct = "application/json"
@@ -357,7 +374,7 @@ func (h *Host) ProxyChat(w http.ResponseWriter, r *http.Request, body []byte, pr
 	// without waiting for the entire completion or upstream timeout.
 	buf := make([]byte, 16*1024)
 	for {
-		n, readErr := resp.Body.Read(buf)
+		n, readErr := responseBody.Read(buf)
 		if n > 0 {
 			if _, err := w.Write(buf[:n]); err != nil {
 				return

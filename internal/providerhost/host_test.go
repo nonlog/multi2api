@@ -19,31 +19,32 @@ func TestProxyChatFallbackBeforeResponse(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		status   int
+		body     string
 		fallback bool
 	}{
-		{"unreachable", 0, true},
-		{"rate limited", http.StatusTooManyRequests, true},
-		{"request error", http.StatusBadRequest, false},
-		{"started stream", http.StatusOK, false},
+		{"unreachable", 0, "", true},
+		{"rate limited", http.StatusTooManyRequests, "", true},
+		{"unpublished inference API", http.StatusBadRequest, `{"error":{"code":"InferHub.APIG.0101.404"}}`, true},
+		{"request error", http.StatusBadRequest, `{"error":{"message":"invalid request"}}`, false},
+		{"started stream", http.StatusOK, "data: {\"error\":{\"message\":\"upstream failed after headers\"}}\n\n", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			const sse = "data: {\"error\":{\"message\":\"upstream failed after headers\"}}\n\n"
 			h := &Host{client: &http.Client{Transport: maintenanceTransport(func(_ *http.Request) (*http.Response, error) {
 				if tc.status == 0 {
 					return nil, context.DeadlineExceeded
 				}
-				return &http.Response{StatusCode: tc.status, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(sse))}, nil
+				return &http.Response{StatusCode: tc.status, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(tc.body))}, nil
 			})}}
 			r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 			w := httptest.NewRecorder()
-			h.ProxyChat(w, r, []byte(`{"model":"glm-5.3-flash","stream":true}`), "zcode", "GLM-5.3-Flash", func() {
+			h.ProxyChat(w, r, []byte(`{"model":"deepseek-v4.1-flash","stream":true}`), "codearts", "deepseek-v4.1-flash", func() {
 				http.Error(w, "fallback executed", http.StatusAccepted)
 			})
 			if tc.fallback {
 				if w.Code != http.StatusAccepted || w.Body.String() != "fallback executed\n" {
 					t.Fatalf("expected only the fallback response, got %d %q", w.Code, w.Body.String())
 				}
-			} else if w.Code != tc.status || w.Body.String() != sse {
+			} else if w.Code != tc.status || w.Body.String() != tc.body {
 				t.Fatalf("expected the original response, got %d %q", w.Code, w.Body.String())
 			}
 		})
