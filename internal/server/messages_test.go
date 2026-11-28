@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nonlog/multi2api/internal/auth"
 	"github.com/nonlog/multi2api/internal/pool"
@@ -462,4 +463,59 @@ func containsStr(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestMessagesStreamReasoningKeepalivePing(t *testing.T) {
+	rec := httptest.NewRecorder()
+	now := time.Unix(1700000000, 0)
+	rw := &messagesWriter{
+		ResponseWriter: rec,
+		stream:         true,
+		pingInterval:   15 * time.Second,
+		now:            func() time.Time { return now },
+	}
+	rw.Header().Set("Content-Type", "text/event-stream")
+
+	writeFrame := func(frame string) {
+		t.Helper()
+		if _, err := rw.Write([]byte(frame + "\n\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// t=0: first reasoning chunk emits message_start only (no immediate ping).
+	writeFrame(`data: {"id":"chatcmpl-p","model":"glm-5.3-flash","choices":[{"index":0,"delta":{"reasoning_content":"step 1"}}]}`)
+	// t=10s: still within pingInterval, no ping yet.
+	now = now.Add(10 * time.Second)
+	writeFrame(`data: {"id":"chatcmpl-p","choices":[{"index":0,"delta":{"reasoning_content":"step 2"}}]}`)
+	// t=16s: exceeds 15s since message_start -> emits ping.
+	now = now.Add(6 * time.Second)
+	writeFrame(`data: {"id":"chatcmpl-p","choices":[{"index":0,"delta":{"reasoning_content":"step 3"}}]}`)
+	// t=32s: exceeds 15s since last ping -> emits second ping.
+	now = now.Add(16 * time.Second)
+	writeFrame(`data: {"id":"chatcmpl-p","choices":[{"index":0,"delta":{"reasoning_content":"step 4"}}]}`)
+	// t=35s: real content arrives and finishes cleanly.
+	now = now.Add(3 * time.Second)
+	writeFrame(`data: {"id":"chatcmpl-p","choices":[{"index":0,"delta":{"content":"done"}}]}`)
+	writeFrame(`data: {"id":"chatcmpl-p","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+	writeFrame(`data: [DONE]`)
+	rw.finish()
+
+	body := rec.Body.String()
+	types := sseTypes(body)
+	pings := 0
+	for _, typ := range types {
+		if typ == "ping" {
+			pings++
+		}
+	}
+	if pings != 2 {
+		t.Fatalf("want 2 pings, got %d; types=%v\n%s", pings, types, body)
+	}
+	if strings.Contains(body, "step 1") || strings.Contains(body, "step 4") {
+		t.Fatalf("reasoning leaked into SSE: %s", body)
+	}
+	if !strings.Contains(body, `"text":"done"`) || types[len(types)-1] != "message_stop" {
+		t.Fatalf("incomplete stream: types=%v\n%s", types, body)
+	}
 }

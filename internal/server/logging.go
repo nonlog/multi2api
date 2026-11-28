@@ -465,9 +465,10 @@ type responseObserver struct {
 }
 
 func (o *responseObserver) WriteHeader(code int) {
-	if o.status == 0 {
-		o.status = code
+	if o.status != 0 {
+		return
 	}
+	o.status = code
 	o.ResponseWriter.WriteHeader(code)
 }
 

@@ -2822,10 +2822,39 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
       },
 
       // magpie's own hook: the daily 「每日领取」 check-in (OpenCode ignores it).
-      // magpie renews the sign-in before asking, and asks once a Beijing day.
+      // Refresh expired temporary STS credentials in-band (like usage does) so
+      // hosts without a background auth.refresh scheduler do not fail with APIG.0602.
       async checkin(getAuth) {
-        const cred = credentialOf(await getAuth())
+        let account = await getAuth()
+        let cred = credentialOf(account)
         if (!cred?.access_key_id) return { outcome: "failed", message: "not signed in" }
+        const refreshForCheckin = async () => {
+          const latest = await getAuth()
+          const stored = credentialOf(latest)
+          if (stored && stored.access_key_id !== cred.access_key_id && !nearExpiry(stored)) {
+            cred = stored
+            account = latest
+            return
+          }
+          const updated = await renewOnce(stored || cred)
+          const next = {
+            ...updated,
+            ...(cred.user_phone && !updated.user_phone ? { user_phone: cred.user_phone } : {}),
+          }
+          account = await persistCredential(client, latest || account, next)
+          cred = next
+        }
+        if (nearExpiry(cred)) {
+          try { await refreshForCheckin() }
+          catch (e) {
+            return {
+              outcome: "failed",
+              message: isPermanentRefreshFailure(e)
+                ? "华为授权已失效，请重新登录 CodeArts"
+                : "华为安全令牌续期失败，请稍后重试",
+            }
+          }
+        }
         const key = await ledgerKey(cred)
         const state = await stateOf(cred)
         const today = beijingDay()
@@ -2834,7 +2863,20 @@ export const CodeArtsAuthPlugin = async ({ client } = {}, options = {}) => {
         // to another process, or past a restart.
         const held = state.unconfirmed?.day === today ? state.unconfirmed : undefined
         const left = held ?? readUnconfirmed(ledgerPath, key)
-        const { grant, unconfirmed, ...r } = await dailyCheckin(cred, fetcher, { unconfirmed: left })
+        let { grant, unconfirmed, ...r } = await dailyCheckin(cred, fetcher, { unconfirmed: left })
+        if (r.outcome === "failed" && /APIG\.0602|security token has expired/i.test(String(r.message || ""))) {
+          try {
+            await refreshForCheckin()
+            ;({ grant, unconfirmed, ...r } = await dailyCheckin(cred, fetcher, { unconfirmed: left }))
+          } catch (e) {
+            return {
+              outcome: "failed",
+              message: isPermanentRefreshFailure(e)
+                ? "华为刷新令牌已失效，请重新登录"
+                : "华为安全令牌续期失败，请稍后重试",
+            }
+          }
+        }
         // A claim whose confirm failed is kept for the next check-in; one
         // confirmed now, or found done, is dropped.
         if (unconfirmed) {

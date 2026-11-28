@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/nonlog/multi2api/internal/httpauth"
 )
@@ -636,14 +637,19 @@ func anthropicErrorBody(status int, obj map[string]any) []byte {
 	return raw
 }
 
+const messagesPingInterval = 15 * time.Second
+
 type messagesWriter struct {
 	http.ResponseWriter
-	stream  bool
-	status  int
-	hdrSent bool
-	rest    []byte
-	body    []byte
-	x       anthState
+	stream       bool
+	status       int
+	hdrSent      bool
+	rest         []byte
+	body         []byte
+	x            anthState
+	lastEmit     time.Time
+	pingInterval time.Duration
+	now          func() time.Time
 }
 
 type anthState struct {
@@ -782,6 +788,32 @@ func (w *messagesWriter) handleFrame(frame string) error {
 	return w.handleChunk(obj)
 }
 
+func (w *messagesWriter) clock() time.Time {
+	if w.now != nil {
+		return w.now()
+	}
+	return time.Now()
+}
+
+func (w *messagesWriter) pingEvery() time.Duration {
+	if w.pingInterval > 0 {
+		return w.pingInterval
+	}
+	return messagesPingInterval
+}
+
+// maybePing 在上游仅输出 reasoning_content（按约定不回传无 signature 的 thinking）期间
+// 定期下发 Anthropic SSE ping，防止 new-api / Cloudflare / 客户端因流静默超时断连。
+func (w *messagesWriter) maybePing() error {
+	if !w.x.started || w.x.done || w.x.failed {
+		return nil
+	}
+	if !w.lastEmit.IsZero() && w.clock().Sub(w.lastEmit) < w.pingEvery() {
+		return nil
+	}
+	return w.emit("ping", nil)
+}
+
 func (w *messagesWriter) handleChunk(obj map[string]any) error {
 	if err := w.ensureStart(obj); err != nil {
 		return err
@@ -791,12 +823,13 @@ func (w *messagesWriter) handleChunk(obj map[string]any) error {
 	}
 	chs, _ := obj["choices"].([]any)
 	if len(chs) == 0 {
-		return nil
+		return w.maybePing()
 	}
 	c, _ := chs[0].(map[string]any)
 	if c == nil {
-		return nil
+		return w.maybePing()
 	}
+	emitted := false
 	if d, _ := c["delta"].(map[string]any); d != nil {
 		if s, ok := d["content"].(string); ok && s != "" {
 			if err := w.ensureText(); err != nil {
@@ -808,15 +841,20 @@ func (w *messagesWriter) handleChunk(obj map[string]any) error {
 			}); err != nil {
 				return err
 			}
+			emitted = true
 		}
-		if tcs, ok := d["tool_calls"].([]any); ok {
+		if tcs, ok := d["tool_calls"].([]any); ok && len(tcs) > 0 {
 			if err := w.onTools(tcs); err != nil {
 				return err
 			}
+			emitted = true
 		}
 	}
 	if fr, ok := c["finish_reason"].(string); ok && fr != "" {
 		w.x.stop = fr
+	}
+	if !emitted {
+		return w.maybePing()
 	}
 	return nil
 }
@@ -1005,5 +1043,6 @@ func (w *messagesWriter) emit(event string, payload map[string]any) error {
 		return err
 	}
 	w.Flush()
+	w.lastEmit = w.clock()
 	return nil
 }
